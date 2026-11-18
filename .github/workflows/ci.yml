@@ -1,0 +1,109 @@
+name: ci
+
+# Two jobs, deliberately separated:
+#
+#  * `quality`  — runs the SAME pre-commit configuration developers run locally.
+#                 If a contributor bypasses the hook with `--no-verify`, this job
+#                 is what catches it. `pre-commit run --all-files` is the
+#                 authoritative gate; the individual tool invocations are
+#                 intentionally absent so config drift is impossible.
+#  * `tests`    — matrix over supported Python versions.
+#
+# From step 5 a third job (`integrity`) verifies, for every commit in the push,
+# that a server-signed attestation covers exactly those git objects.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_SYSTEM_PYTHON: "0"
+  # Deterministic, non-interactive behaviour for tools that would otherwise
+  # prompt or write caches outside the workspace.
+  PYTHONDONTWRITEBYTECODE: "1"
+  RUFF_CACHE_DIR: ${{ github.workspace }}/.cache/ruff
+  MYPY_CACHE_DIR: ${{ github.workspace }}/.cache/mypy
+  PRE_COMMIT_HOME: ${{ github.workspace }}/.cache/pre-commit
+
+jobs:
+  quality:
+    name: pre-commit (lint · types · hygiene)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Sync project
+        run: uv sync --locked --group dev
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: .cache/pre-commit
+          key: precommit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: precommit-${{ runner.os }}-
+
+      - name: pre-commit run --all-files
+        # `--show-diff-on-failure` turns a formatting violation into an
+        # actionable review comment instead of an opaque failure.
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+  tests:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Sync project
+        run: uv sync --locked --group dev
+
+      - name: Run tests
+        run: uv run --python ${{ matrix.python }} pytest -q --cov --cov-report=term-missing
+
+  digest-stability:
+    name: digest format is frozen
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --locked --group dev
+
+      # A change to the digest format silently invalidates every attestation ever
+      # issued. This job makes such a change fail loudly and by name.
+      - name: Golden digest must not change
+        run: uv run pytest tests/test_canon.py -q -k "golden or golden_value"

@@ -1,0 +1,84 @@
+---
+# ---------------------------------------------------------------------------
+# AEGIS · configuración de pre-commit
+#
+# Dos audiencias distintas conviven aquí:
+#
+#   1. Los gates de calidad de ESTE repositorio (ruff, mypy, higiene).
+#   2. (paso 4) El hook AEGIS, que es el objeto del challenge.
+#
+# Decisión deliberada: ruff y mypy se declaran como hooks `local`/`system` en
+# lugar de usar los mirrors con `rev` pineado.
+#
+#   Motivo: los mirrors traen su propia versión del tool, distinta de la que
+#   resuelve `uv.lock`. Eso produce el peor escenario posible en un repo de
+#   seguridad: `ruff check` pasa en local y falla en CI (o al contrario) porque
+#   son binarios distintos, con reglas distintas. Con `language: system` la
+#   única fuente de verdad es `uv.lock`, la misma que instala CI, así que
+#   "verde en local" == "verde en CI" por construcción.
+#
+#   Coste: hay que haber hecho `uv sync` antes (`make install` lo hace). Los
+#   hooks invocan `uv run --frozen`, que usa el entorno del proyecto y falla en
+#   claro si está desincronizado, en vez de releer/reescribir el lock: el
+#   resultado del lint es el del `uv.lock` commiteado, también dentro del git
+#   hook, donde PATH no incluye `.venv/bin`.
+# ---------------------------------------------------------------------------
+default_install_hook_types: [pre-commit, pre-push]
+default_language_version:
+  python: python3.12
+fail_fast: false
+
+repos:
+  # --- Higiene -------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]  # el PDF del enunciado pesa 155 KB
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: trailing-whitespace
+
+  # --- Lint / format / types (versión única, la de uv.lock) ----------------
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint + autofix seguro)
+        entry: uv run --frozen ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run --frozen ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: mypy
+        name: mypy --strict
+        entry: uv run --frozen mypy --config-file=pyproject.toml
+        language: system
+        types_or: [python, pyi]
+        files: ^(src|tests)/
+        require_serial: true
+
+# Los pasos 3–5 añaden aquí el hook AEGIS (declarado `local` mientras el cliente
+# está en desarrollo) y el verificador de integridad en pre-push:
+#
+#   - id: aegis-analyze
+#     name: "AEGIS · análisis GenAI server-side (OWASP Top 10)"
+#     entry: uv run --frozen aegis-hook
+#     language: system
+#     stages: [pre-commit]
+#     require_serial: true
+#     pass_filenames: true
