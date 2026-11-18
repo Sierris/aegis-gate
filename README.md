@@ -92,6 +92,36 @@ pipeline es híbrido (SAST primero, LLM después).
 
 ---
 
+## Publicar en GitHub
+
+El repositorio ya está inicializado con un commit en `main`. Falta el remoto
+(no hay credenciales de GitHub en esta máquina: `gh` no está instalado y no hay
+clave SSH para `github.com`).
+
+```bash
+# Opción A — GitHub CLI (recomendada: crea el repo y hace el push)
+brew install gh
+git remote add origin https://github.com/jesierra20/aegis-gate.git   # o el nombre que uses
+gh auth login
+gh repo create aegis-gate --public --source=. --remote=origin --push
+
+# Opción B — repo creado a mano en la web, luego push
+git remote add origin git@github.com:<usuario>/aegis-gate.git
+git push -u origin main
+```
+
+> **Antes del primer push**: `refs/notes/aegis` (donde vivirán las attestations,
+> paso 5) no se pushea por defecto. Cuando el hook exista habrá que añadir
+> `git push origin refs/notes/aegis` o configurar
+> `remote.origin.push = refs/heads/*:refs/heads/*`. Está previsto en el diseño
+> (ADR-006).
+
+Una vez en GitHub, el workflow [`ci.yml`](.github/workflows/ci.yml) se ejecuta en
+cada push y en cada PR. **No requiere secretos**: los jobs `quality` (pre-commit),
+`tests` (matriz 3.11–3.13) y `digest-stability` (golden digest) son offline.
+
+---
+
 ## Roadmap
 
 - [x] **Paso 1 — Fundamentos**: contrato de datos, digest canónico, `errors`,

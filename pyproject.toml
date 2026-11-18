@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AppSec GenAI commit gate: server-side LLM analysis with signed integrity attestations"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = { file = "LICENSE" }
 authors = [{ name = "Juan Sierra", email = "jesierra20@gmail.com" }]
 keywords = ["appsec", "devsecops", "owasp", "llm", "pre-commit", "supply-chain"]
 classifiers = [
@@ -45,14 +45,9 @@ server = [
 detectors = [
   "semgrep>=1.90",
 ]
-dev = [
-  "pytest>=8.3",
-  "pytest-cov>=5.0",
-  "ruff>=0.6",
-  "mypy>=1.11",
-  "pre-commit>=3.8",
-  "types-pyyaml",
-]
+# NOTE: tooling lives in [dependency-groups] below (PEP 735), not here. Keeping a
+# single definition avoids the classic drift where `--all-extras` and
+# `--group dev` install different versions of ruff/mypy.
 
 [project.scripts]
 # Hook entrypoint (git passes staged filenames; we ignore them and re-derive the
@@ -66,11 +61,14 @@ aegis-server = "aegis.server.main:main"
 [project.urls]
 Homepage = "https://github.com/jesierra20/aegis-gate"
 
+#: Single source of truth for tooling versions. pre-commit invokes these exact
+#: binaries (see .pre-commit-config.yaml), so CI and a developer machine cannot
+#: disagree about what "lint clean" means.
 [dependency-groups]
 dev = [
   "pytest>=8.3",
   "pytest-cov>=5.0",
-  "ruff>=0.6",
+  "ruff>=0.17",
   "mypy>=1.11",
   "pre-commit>=3.8",
 ]
