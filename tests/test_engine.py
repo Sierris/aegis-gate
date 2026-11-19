@@ -15,6 +15,7 @@ target properties rather than plumbing:
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,21 @@ class MutableProvider:
             schema_enforced=True,
             latency_ms=12,
         )
+
+
+@pytest.fixture
+def cache(tmp_path: Path) -> Iterator[AnalysisCache]:
+    """Cache with explicit teardown.
+
+    An unclosed ``sqlite3`` connection is collected as an unraisable exception,
+    and pytest turns warnings into errors — a leak in one test would fail an
+    unrelated one later (observed on 3.13).
+    """
+    instance = AnalysisCache(tmp_path / "cache.db", ttl_seconds=3600, clock=lambda: 1_700_000_000.0)
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 def build_analyzer(
@@ -443,9 +459,8 @@ def test_attestation_uses_a_different_jti_each_time(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # Cache
 # --------------------------------------------------------------------------- #
-def test_cache_avoids_a_second_llm_call(tmp_path: Path) -> None:
+def test_cache_avoids_a_second_llm_call(tmp_path: Path, cache: AnalysisCache) -> None:
     provider = MutableProvider(model_says(finding()))
-    cache = AnalysisCache(tmp_path / "cache.db", ttl_seconds=3600, clock=lambda: 1_700_000_000.0)
     analyzer = build_analyzer(tmp_path, provider, cache=cache)
 
     first = analyzer.analyze(make_request({"app.py": VULNERABLE}), actor="dev@mercadolibre.com")
@@ -477,9 +492,8 @@ def test_cache_key_includes_the_policy(tmp_path: Path) -> None:
     assert a != b
 
 
-def test_corrupt_cache_entry_is_reanalysed(tmp_path: Path) -> None:
+def test_corrupt_cache_entry_is_reanalysed(tmp_path: Path, cache: AnalysisCache) -> None:
     provider = MutableProvider(model_says(finding()))
-    cache = AnalysisCache(tmp_path / "cache.db", ttl_seconds=3600, clock=lambda: 1_700_000_000.0)
     analyzer = build_analyzer(tmp_path, provider, cache=cache)
     request = make_request({"app.py": VULNERABLE})
     analyzer.analyze(request, actor="dev@mercadolibre.com")
@@ -492,9 +506,8 @@ def test_corrupt_cache_entry_is_reanalysed(tmp_path: Path) -> None:
     assert len(provider.calls) == 2
 
 
-def test_degraded_verdicts_are_not_cached(tmp_path: Path) -> None:
+def test_degraded_verdicts_are_not_cached(tmp_path: Path, cache: AnalysisCache) -> None:
     provider = MutableProvider(model_says())
-    cache = AnalysisCache(tmp_path / "cache.db", ttl_seconds=3600, clock=lambda: 1_700_000_000.0)
     analyzer = build_analyzer(tmp_path, provider, cache=cache)
     request = make_request({"app.py": VULNERABLE})
     analyzer.analyze(request, actor="dev@mercadolibre.com")

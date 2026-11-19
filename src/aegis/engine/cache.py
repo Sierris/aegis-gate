@@ -26,6 +26,7 @@ What is never cached: the attestation. Each response is signed fresh with a new
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -125,6 +126,26 @@ class AnalysisCache:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def __enter__(self) -> AnalysisCache:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        """Best-effort close.
+
+        Not a substitute for ``close()`` (the server does it in its lifespan), but
+        an unclosed ``sqlite3`` connection surfaces as an unraisable exception at
+        GC time, which pytest escalates to a failure on 3.13+. Failing a build for
+        a leaky destructor is noise; swallowing it here is honest as long as the
+        explicit path exists.
+        """
+        conn = getattr(self, "_conn", None)
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
 
     def get(self, key: str) -> CachedVerdict | None:
         if self._ttl <= 0:
