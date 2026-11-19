@@ -463,6 +463,21 @@ evento y una alerta asociada.
 | Picos de `override` | `OVERRIDE_APPROVE` por repo/dev | media: gate siendo erosionado |
 | Latencia del análisis subiendo | `latency_ms` p95 | operativa |
 
+### Caso real: dos controles en conflicto
+
+El primer push de los ejemplos fue **rechazado por GitHub Push Protection**: el
+ejemplo de A02 contenía un `sk_live_…` ficticio y el escáner de secretos de GitHub
+lo detectó. Dos controles legítimos chocando: el ejemplo necesita un secreto
+hardcodeado para demostrar la regla, y el remoto no acepta secretos con formato de
+proveedor real.
+
+La resolución **no** fue saltarse el control (botón de "unblock secret"), sino
+cambiar el valor por uno **inerte** (`hardcoded-api-key-placeholder-not-a-real-credential`).
+Sigue disparando `A02-SECRET-001` porque la regla mira la forma `nombre = "valor"`,
+no la entropía del valor. Es el principio general: cuando dos controles chocan, se
+ajusta el artefacto para que el control siga diciendo la verdad, no se silencia el
+control.
+
 Además: **canary commits**. Un job programado pushea a un repo trampa commits con
 una vulnerabilidad conocida (y con intentos de prompt injection) y verifica que
 el sistema los bloquea. Si un canary pasa, hay un fallo real de detección, no una
