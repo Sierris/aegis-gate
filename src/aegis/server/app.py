@@ -99,6 +99,11 @@ class AppContext:
     key: SigningKey
     provider: IdentityProvider
     service: AuthService
+    #: None until the engine is wired (see ``_build_analyzer``); the analyze route
+    #: answers 500 with a clear message instead of pretending to analyse.
+    analyzer: Any = None
+    audit_key: bytes | None = None
+    cache: Any = None
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +134,9 @@ def create_app(
     store: AuthStore | None = None,
     key: SigningKey | None = None,
     provider: IdentityProvider | None = None,
+    llm_provider: Any = None,
+    analyzer: Any = None,
+    cache: Any = None,
     now: Any = time.time,
 ) -> FastAPI:
     """Build the app. All collaborators are injectable so tests need no network,
@@ -142,7 +150,7 @@ def create_app(
         the_provider = provider or build_provider(
             cfg.auth_provider, store=the_store, github_api_url=cfg.github_api_url
         )
-        app.state.ctx = AppContext(
+        ctx = AppContext(
             settings=cfg,
             store=the_store,
             key=the_key,
@@ -155,6 +163,16 @@ def create_app(
                 now=now,
             ),
         )
+        # The engine is optional at import time so tests can build the app with a
+        # fake provider (or none at all) without touching prompts or the network.
+        if analyzer is not None:
+            ctx.analyzer = analyzer
+            ctx.cache = cache
+        else:
+            ctx.analyzer = _build_analyzer(cfg, the_store, the_key, now, llm_provider)
+            ctx.cache = ctx.analyzer.cache
+        app.state.cache = ctx.cache
+        app.state.ctx = ctx
         logger.info(
             "aegis server ready: env=%s issuer=%s kid=%s provider=%s",
             cfg.env,
@@ -165,6 +183,9 @@ def create_app(
         try:
             yield
         finally:
+            cache_handle = app.state.cache
+            if cache_handle is not None and cache is None:
+                cache_handle.close()
             if store is None:  # only close what we opened
                 the_store.close()
 
@@ -185,7 +206,72 @@ def create_app(
         )
 
     _register_routes(app)
+    from aegis.server.routes_analyze import router as analyze_router  # noqa: PLC0415 - breaks a cycle
+
+    app.include_router(analyze_router)
     return app
+
+
+def _build_analyzer(
+    cfg: ServerSettings,
+    store: AuthStore,
+    key: SigningKey,
+    now: Any,
+    llm_provider: Any = None,
+) -> Any:
+    """Assemble the analysis engine (prompt bundle, provider, cache).
+
+    Kept out of ``create_app`` so that the expensive/fallible parts (reading the
+    prompt from disk, resolving an API key) are one clearly named function and so
+    that a test can substitute any of them.
+    """
+    from aegis.engine.analyzer import Analyzer, EngineDeps  # noqa: PLC0415 - optional dep
+    from aegis.engine.cache import AnalysisCache  # noqa: PLC0415 - optional dep
+    from aegis.engine.prompts import load_bundle  # noqa: PLC0415 - optional dep
+    from aegis.llm import CommandCodeProvider, FakeProvider  # noqa: PLC0415 - optional dep
+
+    bundle = load_bundle(cfg.prompt_dir, prompt_file=cfg.prompt_file)
+
+    provider = llm_provider
+    if provider is None:
+        provider = (
+            FakeProvider()
+            if cfg.llm_provider == "fake"
+            else CommandCodeProvider(
+                base_url=cfg.llm_base_url,
+                api_key=cfg.llm_key,
+                model=cfg.llm_model,
+                timeout=cfg.llm_timeout_seconds,
+                wire=cfg.llm_wire,
+                zdr=cfg.llm_zdr,
+                clock=now,
+            )
+        )
+
+    analysis_cache = (
+        AnalysisCache(
+            cfg.db_path.parent / "aegis-cache.db",
+            ttl_seconds=cfg.analysis_cache_ttl_seconds,
+            clock=now,
+        )
+        if cfg.analysis_cache_enabled
+        else None
+    )
+    return Analyzer(
+        EngineDeps(
+            provider=provider,
+            bundle=bundle,
+            key=key,
+            issuer=cfg.issuer or cfg.public_url,
+            fail_mode="closed",  # policy: fail-closed; see ADR-005
+            strict_cross_check=cfg.strict_cross_check,
+            max_output_tokens=cfg.llm_max_output_tokens,
+            temperature=cfg.llm_temperature,
+            cache=analysis_cache,
+            store=store,
+            now=now,
+        )
+    )
 
 
 def _ctx(request: Request) -> AppContext:

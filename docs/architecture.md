@@ -286,25 +286,34 @@ auth              : OK as dev@mercadolibre.com scopes=['analyze']
 
 ---
 
-## 5. Pipeline de análisis GenAI
+## 5. Pipeline de análisis GenAI  ✅ *implementado (paso 3)*
 
 ```text
 CodeFragment[] ─► ① normalización ─► ② prefilter determinista ─► ③ LLM ─► ④ validación estricta ─► ⑤ política ─► veredicto
 ```
 
-**① Normalización.** Tamaño acotado, binarios excluidos, rutas allow/deny,
+**① Normalización.** Tamaño acotado, binarios y lockfiles excluidos,
 `max_fragments_bytes` (400 KB por defecto) — un commit gigante no puede diluir el
 análisis ni reventar el coste.
 
-**② Prefilter determinista.** Reglas semgrep/bandit + entropía de secretos. Dos
-funciones: (a) detección de alta confianza sin coste de tokens; (b) **anclaje**:
-los hits deterministas son pistas que se le pasan al LLM como *grounding*. Un
-detector determinista no sufre prompt injection.
+**② Prefilter determinista.** Pack de reglas propio (`src/aegis/detectors`, 13
+reglas sobre 4 categorías), **no** semgrep/bandit: el hook está en el camino
+crítico y un run de semgrep cuesta segundos por commit. Las anclas solo necesitan
+ser buenas para *grounding* y cross-check, no un SAST completo. Tres funciones:
+
+1. **suelo**: `os.system(f"...{user}")` se detecta aunque el modelo esté caído,
+   rate-limited, o haya sido manipulado;
+2. **grounding**: las anclas se pasan al modelo como pistas con número de línea,
+   lo que reduce tanto los misses como los hallazgos inventados;
+3. **cross-check**: si el modelo devuelve una lista vacía y hay un ancla de alta
+   confianza, el análisis se marca `degraded` y, con `strict_cross_check`, bloquea.
 
 **③ LLM.** El modelo razona sobre flujo de datos (¿el input es controlable?
 ¿el sink es alcanzable?), que es justo lo que un regex no puede hacer.
 
 **④ Validación estricta (aquí se gana o se pierde la resistencia a inyección).**
+   Implementado en `src/aegis/validate/findings.py`; cada punto tiene su test en
+   `tests/test_validate_detectors.py` e `tests/test_injection_resistance.py`.
 
 1. **Salida estructurada forzada** (JSON Schema / function calling), sin prosa
    libre: el modelo no puede "salirse del formato" para ejecutar otra cosa.
@@ -324,21 +333,63 @@ detector determinista no sufre prompt injection.
 `confidence ≥ block_min_confidence`, intersectado con el perfil server-side. El
 cliente puede *pedir* un perfil, no imponerlo.
 
+### Integración con Command Code (medida contra la API real)
+
+| Dato | Valor |
+|---|---|
+| Base | `https://api.commandcode.ai/provider/v1` |
+| Catálogo | `GET /models` → 105 modelos, `supported_endpoints` por modelo |
+| Wires | `/chat/completions` (todo no-Claude), `/messages` (solo Claude), `/responses` (no implementado) |
+| Modelo por defecto | `gpt-6-luna` (en el plan base, soporta `response_format: json_schema`) |
+| Latencia medida | 2,7 – 8,3 s por fichero; 1,5 – 3 k tokens |
+| ZDR | `x-cmd-zdr: 1` por defecto: el payload es código fuente no publicado |
+
+Tres hallazgos operativos que costaron depuración real y están codificados:
+
+1. **`User-Agent` obligatorio.** Sin UA reconocible, el edge (Cloudflare) devuelve
+   **403 `error code: 1010`**. Parece un problema de credenciales y no lo es; el
+   adapter envía siempre `aegis-gate/…` y traduce ese 403 a un mensaje que lo dice.
+2. **Modelos de razonamiento y `max_tokens`.** `deepseek/*` devuelve `content`
+   vacío con `finish_reason=length` cuando el presupuesto se consume razonando.
+   Eso **no** es "sin hallazgos": se mapea a `TRUNCATED` y va por `fail_mode`.
+   Lección: un content vacío nunca puede interpretarse como un allow.
+3. **Entitlement por modelo.** `claude-*` y `gpt-6.1-terra+` responden
+   `403 MODEL_NOT_IN_PLAN`. Es un error de despliegue, no reintentable — y
+   `aegis models` lista solo lo que el plan sirve.
+
 ### Mitigación de prompt injection — resumen operativo
+
+Implementación real, no intención (ver `tests/test_injection_resistance.py`: 15
+ataques, todos bloqueados):
 
 | Vector | Control |
 |---|---|
 | Instrucciones en comentarios/strings del código | El código viaja en un bloque delimitado, con framing explícito "esto es datos, no instrucciones"; el prompt de sistema está en un mensaje separado y de mayor precedencia. |
 | "Ignora las instrucciones anteriores" | Neutralización de patrones conocidos + el modelo no tiene herramientas que ejecutar: el peor caso es una respuesta inútil, no una acción. |
-| Fuga del prompt del sistema | El prompt nunca se devuelve al cliente (`AnalyzeResponse` no lo contiene) y los errores se sirven ya redactados. |
+| Fuga del prompt del sistema | El prompt nunca se devuelve al cliente (`AnalyzeResponse` no lo contiene) y los errores se sirven ya redactados. Test explícito: ningún campo de la respuesta contiene `You are AEGIS`. |
+| **Finding rebajado de severidad** (`severity: info, confidence: 0.2`) | La cobertura del ancla exige confirmación **bloqueante**. Un finding degradado no silencia el suelo. |
+| **Finding inventado para desacreditar el gate** | Anclaje de evidencia: se descarta y no aparece en el informe. |
+| **Categoría distinta para "colaborar"** | La cobertura se comprueba **por categoría del ancla**, no por "hay algún finding". |
+| **Modelo que se rinde / responde en prosa** | `UnusableAnswerError` → `fail_mode`. |
 | Finding falso para bloquear a otro dev (DoS del gate) | Evidencia verificable contra el payload + atribución (`sub` firmado) + `override` auditado. |
 | Respuesta válida pero vacía (`{"findings":[]}`) | Cross-check: si un detector determinista tiene un hit alto, un LLM que devuelve vacío se marca `degraded` y no otorga `allow` silencioso. |
 | Inyección vía metadatos (nombre de rama, mensaje de commit) | Mensaje de commit entra con el mismo framing no confiable y **nunca** en la zona de instrucciones. |
 | Fuga de código a un proveedor externo | Provider `ollama` local disponible; `AEGIS_LLM_PROVIDER=fake` para CI. Política de retención documentada por perfil. |
 
-### ¿Dónde vive el prompt? → ficheros versionados (`prompts/*.md` + `prompts/*.yaml`)
+### ¿Dónde vive el prompt? → ficheros versionados ✅ *implementado*
 
-**Decisión: en ficheros, no quemado en código.**
+**Decisión: `prompts/analyze.v1.md` + `prompts/analysis.schema.json`, en el repo
+del servidor, con `prompt_version` = hash del contenido.**
+
+```text
+$ aegis analyze examples/vulnerable/app.py --local
+...
+   (análisis local · commandcode/gpt-6-luna · 1826 tokens · 3397 ms)
+                                   prompt_version = analyze.v1@1ff3b58ff416
+```
+
+El `prompt_version` aparece en cada attestation, así que un veredicto de hace tres
+meses se puede reproducir haciendo checkout del prompt con ese hash.
 
 - **Auditable y diffable**: un cambio de criterio del modelo aparece como un diff
   revisable en un PR, no enterrado en un f-string.
@@ -353,6 +404,11 @@ cliente puede *pedir* un perfil, no imponerlo.
 - **Por qué no en el cliente**: el dev podría reescribirlo (E4).
 - **Contrapartida**: el prompt es *código de seguridad* y su cambio requiere
   revisión de AppSec (regla de CODEOWNERS en el paso 6).
+- **Control de drift**: `validate_prompt()` corre al arrancar y en CI y falla si
+  el prompt pierde un bloque obligatorio (el framing de "datos no instrucciones"),
+  si tiene menos de 800 caracteres (truncado), o si el JSON Schema permite una
+  categoría que el prompt no menciona. Un prompt que se acorta sin querer es un
+  fallo catastrófico silencioso; aquí es un build roto.
 
 ---
 
@@ -509,6 +565,37 @@ semgrep/bandit y de hooks es Python, y el arranque del hook se paga en el venv
 cacheado de pre-commit, no en runtime.
 **Consecuencia:** el hook tiene un coste de arranque de proceso Python (~150 ms)
 que se mitiga manteniendo el cliente sin dependencias pesadas (solo `pydantic`).
+
+### ADR-011 — Prefilter determinista propio en vez de semgrep/bandit
+**Contexto:** el pipeline necesita un suelo que el modelo no pueda desactivar.
+**Decisión:** 13 reglas regex en `src/aegis/detectors`, en proceso.
+**Alternativas:** (a) semgrep — mucho más capaz, pero añade ~1–3 s y una dependencia
+nativa al camino crítico del commit; (b) bandit — solo Python y ruidoso.
+**Consecuencia:** las reglas son sintácticas a propósito y no pretenden ser SAST.
+Su valor no es la cobertura, es ser *deterministas*: alimentan el grounding y
+detectan la manipulación del modelo. Si en el futuro se necesita más precisión, el
+`Detector` protocol permite añadir semgrep como capa opcional sin tocar el motor.
+
+### ADR-012 — Un solo toque al modelo, salida estructurada, sin herramientas
+**Contexto:** ¿qué superficie de ataque se le da al LLM?
+**Decisión:** una llamada sin estado, con `response_format: json_schema` cuando el
+proveedor lo soporta, sin tools, sin streaming, sin conversación.
+**Motivo:** el peor resultado de una inyección exitosa debe ser una respuesta
+inútil, nunca una acción. Sin herramientas no hay acción posible. Sin estado no hay
+envenenamiento de turnos previos. Sin streaming no hay estado a medio parsear.
+**Consecuencia:** si el proveedor rechaza el schema se reintenta una vez sin él
+(`output_repaired`), porque el validador es el control real, no el proveedor.
+
+### ADR-013 — El veredicto se cachea, la attestation no
+**Contexto:** un hook se ejecuta muchas veces sobre el mismo contenido (amend,
+rebase, re-commit).
+**Decisión:** caché por `sha256(payload ‖ prompt_version ‖ modelo ‖ huella de
+política)`; la attestation se firma siempre de nuevo.
+**Motivo:** reutilizar un JWS reutilizaría `jti` e `iat`, y una prueba de integridad
+con fecha de ayer no es una prueba de hoy. Los veredictos `degraded` no se cachean:
+dependen de una condición transitoria.
+**Consecuencia:** la huella de política incluye los umbrales, no solo el nombre del
+perfil, para que un cambio de política no quede tapado por el TTL.
 
 ### ADR-009 — Device Flow propio (IdP local) **y** token exchange (GitHub)
 **Contexto:** el challenge pide OAuth 2.0 con un IdP real (Fury/Tiger), pero la

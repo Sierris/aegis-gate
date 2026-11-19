@@ -39,13 +39,16 @@ dependencies = [
 server = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  # Upstream identity providers (GitHub) and the LLM adapters in step 3.
-  "pyyaml>=6.0",
+  # Required by `await request.form()` on the /device approval page. It used to
+  # arrive transitively; a re-resolve dropped it and only the test suite noticed.
+  # Declared explicitly so a clean install cannot lose the device flow.
+  "python-multipart>=0.0.9",
 ]
-# Deterministic pre-filter used before the LLM call.
-detectors = [
-  "semgrep>=1.90",
-]
+# NOTE: there is deliberately no `detectors` extra. The deterministic pre-filter is
+# an in-tree rule pack (src/aegis/detectors) rather than semgrep/bandit, because the
+# hook sits in the commit path and a semgrep run costs seconds per commit. The
+# anchors only need to be good enough to ground and cross-check the model, not to be
+# a full SAST engine — see docs/architecture.md §5.
 # NOTE: tooling lives in [dependency-groups] below (PEP 735), not here. Keeping a
 # single definition avoids the classic drift where `--all-extras` and
 # `--group dev` install different versions of ruff/mypy.
@@ -128,6 +131,12 @@ ignore = [
 # reach into internals to prove the audit chain detects tampering (SLF001),
 # import inside fixtures to keep module import cost out of the common path, and
 # split assertions deliberately for clearer failure messages.
+# The examples are *deliberately* vulnerable: they are the demo of the gate. Any
+# rule whose autofix would rewrite them (UP031 turns `%` into `.format`, which is a
+# different code path) or whose warning is the point of the file (S605/S608/S324/
+# S311 are exactly what AEGIS is supposed to report) is disabled here on purpose.
+"examples/**" = ["S", "UP", "T20", "ARG", "DTZ", "PLR2004", "E501"]
+
 "tests/*" = [
   "S101", "S105", "S106", "S108", "SLF001",
   "PLR2004", "ARG001", "ARG002", "RUF059",

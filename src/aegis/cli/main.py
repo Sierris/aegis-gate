@@ -20,6 +20,7 @@ import argparse
 import getpass
 import json
 import sys
+from pathlib import Path
 
 import httpx
 
@@ -48,6 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("token", help="imprimir un access token válido")
     sub.add_parser("doctor", help="diagnóstico del entorno cliente")
     sub.add_parser("keys", help="mostrar el JWKS del servidor")
+
+    analyze = sub.add_parser("analyze", help="analizar un fichero (server-side o --local)")
+    analyze.add_argument("path", type=Path, help="fichero a analizar")
+    analyze.add_argument("--local", action="store_true", help="ejecutar el motor en proceso")
+    analyze.add_argument("--json", action="store_true", help="salida JSON completa")
+
+    models = sub.add_parser("models", help="listar modelos disponibles de Command Code")
+    models.add_argument("pattern", nargs="?", default=None, help="filtro por substring")
 
     user = sub.add_parser("user", help="gestión de usuarios del proveedor local")
     user_sub = user.add_subparsers(dest="user_command", required=True)
@@ -166,7 +175,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return server_main(argv)
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - one return per subcommand is clearer than a dict of callables
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 - a return per subcommand reads better than a dispatch dict
     args = build_parser().parse_args(argv)
     try:
         match args.command:
@@ -182,6 +191,21 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - one return pe
                 return cmd_doctor()
             case "keys":
                 return cmd_keys()
+            case "analyze":
+                from aegis.cli.analyze import analyze_local, analyze_remote  # noqa: PLC0415
+
+                if not args.path.is_file():
+                    print(f"✗ not a file: {args.path}", file=sys.stderr)
+                    return 2
+                return (
+                    analyze_local(args.path, as_json=args.json)
+                    if args.local
+                    else analyze_remote(args.path, as_json=args.json)
+                )
+            case "models":
+                from aegis.cli.analyze import cmd_models  # noqa: PLC0415
+
+                return cmd_models(args.pattern)
             case "user":
                 return cmd_user(args)
             case "serve":

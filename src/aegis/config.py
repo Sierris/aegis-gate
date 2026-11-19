@@ -92,6 +92,40 @@ class ServerSettings(_BaseSettings):
     #: minted for repo A from producing attestations for repo B.
     allowed_repos: tuple[str, ...] = ()
 
+    # --- LLM (Command Code Provider API) ----------------------------------
+    llm_provider: Literal["commandcode", "fake"] = "commandcode"
+    #: Model id as published by ``GET /provider/v1/models``. ``gpt-6-luna`` is a
+    #: deliberate default: it is included in the base plan, supports structured
+    #: output, and is strong at data-flow reasoning. Claude models require a Pro
+    #: plan and answer on the Anthropic Messages wire (supported, untested here).
+    llm_model: str = "gpt-6-luna"
+    llm_base_url: str = "https://api.commandcode.ai/provider/v1"
+    #: Explicit key. If empty, ``COMMAND_CODE_API_KEY`` and the CLI/provider auth
+    #: files are tried, in that order (see ``llm.commandcode.resolve_api_key``).
+    llm_api_key: SecretStr | None = None
+    #: ``auto`` | ``chat`` | ``messages``. ``auto`` asks the catalog.
+    llm_wire: Literal["auto", "chat", "messages"] = "auto"
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    #: Reasoning models spend this budget on their reasoning channel before they
+    #: emit a single answer token; too small a value yields an empty answer.
+    llm_max_output_tokens: int = Field(default=4000, ge=256, le=32768)
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    #: Send ``x-cmd-zdr: 1`` so the provider does not retain the reviewed code.
+    #: On by default: the payload is a company's unreleased source code.
+    llm_zdr: bool = True
+
+    # --- Analysis engine --------------------------------------------------
+    prompt_dir: Path = Path("prompts")
+    prompt_file: str = "analyze.v1.md"
+    #: Cache of verdicts by (payload, prompt version, model, policy). Disable in
+    #: environments where the model output must never be reused.
+    analysis_cache_enabled: bool = True
+    analysis_cache_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=0)
+    #: When the model reports nothing but the deterministic floor found a blocking
+    #: pattern, refuse to allow. This is the anti-prompt-injection backstop; only
+    #: disable it to investigate a specific false positive.
+    strict_cross_check: bool = True
+
     # --- Anti-abuse -------------------------------------------------------
     #: Failed user_code submissions per client IP before the flow is locked.
     device_code_attempt_limit: int = Field(default=10, ge=1, le=1000)
@@ -118,11 +152,21 @@ class ServerSettings(_BaseSettings):
             problems.append("AEGIS_PUBLIC_URL must be https in prod")
         if self.auth_provider == "github" and not self.github_client_id:
             problems.append("AEGIS_GITHUB_CLIENT_ID is required when AEGIS_AUTH_PROVIDER=github")
+        if self.llm_provider == "fake":
+            problems.append("AEGIS_LLM_PROVIDER=fake is not a production analyser")
         if not self.allowed_repos:
             problems.append("AEGIS_ALLOWED_REPOS must be set in prod (prevents cross-repo attestations)")
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+    @property
+    def llm_key(self) -> str:
+        """Resolved API key (never logged). Empty when none is available."""
+        explicit = self.llm_api_key.get_secret_value() if self.llm_api_key else None
+        from aegis.llm.commandcode import resolve_api_key  # noqa: PLC0415 - avoids an import cycle
+
+        return resolve_api_key(explicit)
 
     @property
     def verification_uri(self) -> str:
