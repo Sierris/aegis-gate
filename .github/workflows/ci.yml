@@ -53,7 +53,10 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Sync project
-        run: uv sync --locked --group dev
+        # --all-extras matters: mypy and pytest both import the FastAPI server,
+        # so a base-only install would fail type-checking and collection. The
+        # extras are also part of the product surface that CI must cover.
+        run: uv sync --locked --all-extras --group dev
 
       - name: Cache pre-commit environments
         uses: actions/cache@v4
@@ -65,7 +68,7 @@ jobs:
       - name: pre-commit run --all-files
         # `--show-diff-on-failure` turns a formatting violation into an
         # actionable review comment instead of an opaque failure.
-        run: uv run pre-commit run --all-files --show-diff-on-failure
+        run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
 
   tests:
     name: pytest (py${{ matrix.python }})
@@ -85,11 +88,14 @@ jobs:
       - name: Install Python ${{ matrix.python }}
         run: uv python install ${{ matrix.python }}
 
-      - name: Sync project
-        run: uv sync --locked --group dev
+      - name: Sync project for py${{ matrix.python }}
+        # The venv is created for the matrix interpreter *once*, here. Skipping
+        # this and relying on `uv run --python X` would re-create the environment
+        # on the fly and silently drop the extras.
+        run: uv sync --locked --all-extras --group dev --python ${{ matrix.python }}
 
       - name: Run tests
-        run: uv run --python ${{ matrix.python }} pytest -q --cov --cov-report=term-missing
+        run: uv run --no-sync --frozen pytest -q --cov --cov-report=term-missing
 
   digest-stability:
     name: digest format is frozen
@@ -101,9 +107,9 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --locked --group dev
+      - run: uv sync --locked --all-extras --group dev
 
       # A change to the digest format silently invalidates every attestation ever
       # issued. This job makes such a change fail loudly and by name.
       - name: Golden digest must not change
-        run: uv run pytest tests/test_canon.py -q -k "golden or golden_value"
+        run: uv run --no-sync pytest tests/test_canon.py -q -k "golden or golden_value"
