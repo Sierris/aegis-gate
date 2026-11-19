@@ -1,0 +1,206 @@
+"""``aegis`` — the developer/admin CLI.
+
+Commands (step 2 scope):
+
+    aegis login       device flow, stores the refresh token
+    aegis logout      revokes server-side and wipes the cache
+    aegis whoami      prints the authenticated identity and scopes
+    aegis token       prints a usable access token (for scripts/CI)
+    aegis doctor      checks cache permissions, server reachability, key fingerprint
+    aegis user add    creates a local-provider user (server-side, same machine)
+    aegis keys        prints the JWKS and the local key id
+    aegis serve       runs the API server (convenience wrapper)
+
+Exit codes are documented in ``aegis.errors``; ``aegis`` never exits 0 on error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import sys
+
+import httpx
+
+from aegis import __version__
+from aegis.auth.client import AuthClient, cache_mode_report
+from aegis.auth.provider import LocalIdentityProvider
+from aegis.auth.store import AuthStore
+from aegis.config import get_client_settings, get_server_settings
+from aegis.errors import AegisError
+from aegis.server.main import main as server_main
+
+PROG = "aegis"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog=PROG, description="AEGIS · AppSec GenAI commit gate")
+    p.add_argument("--version", action="version", version=f"{PROG} {__version__}")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    login = sub.add_parser("login", help="autenticarse con OAuth 2.0 Device Flow")
+    login.add_argument("--scope", default="analyze", help="scopes solicitados (default: analyze)")
+    login.add_argument("--no-browser", action="store_true", help="no intentar abrir el navegador")
+
+    sub.add_parser("logout", help="revocar el token y limpiar la cache local")
+    sub.add_parser("whoami", help="mostrar identidad y scopes del token")
+    sub.add_parser("token", help="imprimir un access token válido")
+    sub.add_parser("doctor", help="diagnóstico del entorno cliente")
+    sub.add_parser("keys", help="mostrar el JWKS del servidor")
+
+    user = sub.add_parser("user", help="gestión de usuarios del proveedor local")
+    user_sub = user.add_subparsers(dest="user_command", required=True)
+    user_add = user_sub.add_parser("add", help="crear o actualizar un usuario local")
+    user_add.add_argument("--email", required=True)
+    user_add.add_argument("--name", default="")
+    user_add.add_argument("--password", help="si se omite, se pide por terminal")
+    user_sub.add_parser("list", help="listar usuarios")
+
+    serve = sub.add_parser("serve", help="arrancar el servidor de análisis")
+    serve.add_argument("--listen", default=None)
+    serve.add_argument("--reload", action="store_true")
+    return p
+
+
+def _fail(exc: AegisError) -> int:
+    print(f"✗ {exc.render()}", file=sys.stderr)
+    return exc.exit_code
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    settings = get_client_settings()
+    with AuthClient(settings) as client:
+        client.login(scope=args.scope, open_browser=not args.no_browser)
+        print(f"  cache: {client.cache!r}", flush=True)
+    return 0
+
+
+def cmd_logout() -> int:
+    settings = get_client_settings()
+    with AuthClient(settings) as client:
+        revoked = client.logout()
+    print(f"  {'sesión revocada en el servidor' if revoked else 'cache local limpiada'}")
+    return 0
+
+
+def cmd_whoami() -> int:
+    settings = get_client_settings()
+    with AuthClient(settings) as client:
+        info = client.whoami()
+    print(json.dumps(info, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_token() -> int:
+    settings = get_client_settings()
+    with AuthClient(settings) as client:
+        # Only the token goes to stdout: it is meant for `$(aegis token)`.
+        print(client.access_token())
+    return 0
+
+
+def cmd_doctor() -> int:
+    settings = get_client_settings()
+    print(f"aegis {__version__}")
+    print(f"server_url        : {settings.server_url}")
+    print(f"token_cache       : {settings.token_cache} ({cache_mode_report(settings.token_cache)})")
+    print(f"fail_mode         : {settings.fail_mode}")
+    print(f"env_token_allowed : {settings.allow_env_token}")
+    try:
+        with AuthClient(settings) as client:
+            info = client.whoami()
+        print(f"auth              : OK as {info.get('sub')} scopes={info.get('scopes')}")
+        return 0
+    except AegisError as exc:
+        print(f"auth              : {exc.slug} ({exc.message})")
+        return exc.exit_code
+
+
+def cmd_keys() -> int:
+    settings = get_client_settings()
+    try:
+        r = httpx.get(f"{settings.server_url}/v1/keys", timeout=10.0)
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        print(f"✗ cannot fetch JWKS: {exc}", file=sys.stderr)
+        return 4
+    print(json.dumps(r.json(), indent=2))
+    return 0
+
+
+def cmd_user(args: argparse.Namespace) -> int:
+    cfg = get_server_settings()
+    store = AuthStore(cfg.db_path)
+    try:
+        provider = LocalIdentityProvider(store)
+        if args.user_command == "add":
+            password = args.password or getpass.getpass("Password: ")
+            if len(password) < 12:
+                print("✗ password must be at least 12 characters", file=sys.stderr)
+                return 2
+            identity = provider.create_user(
+                email=args.email, name=args.name or args.email.split("@")[0], password=password
+            )
+            print(f"  ✓ usuario {identity.email} creado/actualizado en {cfg.db_path}")
+            return 0
+        if args.user_command == "list":
+            rows = store.list_users()
+            if not rows:
+                print("  (sin usuarios)")
+            for row in rows:
+                state = "disabled" if row.disabled else "active"
+                print(f"  {row.email:<40} {row.provider:<8} {state}")
+            return 0
+    finally:
+        store.close()
+    return 2
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    argv: list[str] = []
+    if args.listen:
+        argv += ["--listen", args.listen]
+    if args.reload:
+        argv.append("--reload")
+    return server_main(argv)
+
+
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - one return per subcommand is clearer than a dict of callables
+    args = build_parser().parse_args(argv)
+    try:
+        match args.command:
+            case "login":
+                return cmd_login(args)
+            case "logout":
+                return cmd_logout()
+            case "whoami":
+                return cmd_whoami()
+            case "token":
+                return cmd_token()
+            case "doctor":
+                return cmd_doctor()
+            case "keys":
+                return cmd_keys()
+            case "user":
+                return cmd_user(args)
+            case "serve":
+                return cmd_serve(args)
+    except AegisError as exc:
+        return _fail(exc)
+    except KeyboardInterrupt:  # pragma: no cover - interactive
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+    return 2
+
+
+# ``aegis-hook`` lives in ``aegis.cli.hook`` (step 4); imported lazily there so
+# that installing the CLI does not pull the git plumbing into every invocation.
+def hook_main(argv: list[str] | None = None) -> int:  # pragma: no cover - placeholder
+    del argv
+    print("aegis-hook is implemented in step 4 of the roadmap", file=sys.stderr)
+    return 6
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

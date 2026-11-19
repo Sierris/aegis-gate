@@ -5,7 +5,8 @@ Gate de commits con análisis **server-side** de OWASP Top 10 usando un LLM, con
 permiten demostrar, en CI, que los commits que llegaron al remoto son exactamente
 los que el analizador inspeccionó.
 
-> **Estado:** paso 1 de N — fundamentos. Ver [Roadmap](#roadmap).
+> **Estado:** pasos 1–2 de N — fundamentos + autenticación funcionando
+> end-to-end. Ver [Roadmap](#roadmap).
 
 ---
 
@@ -28,6 +29,8 @@ produce un commit sin attestation y CI lo rechaza.
 ```text
 dev machine                          server-side                    CI (GitHub Actions)
 ───────────                          ───────────                    ───────────────────
+aegis login  ──► device flow (RFC 8628) ──► access + refresh token ✅
+   │                                          (Ed25519, scopes)
 git commit
    │
    ├─ hook: staged index ──► digest ──► POST /v1/analyze ──► LLM + SAST ──► veredicto
@@ -73,6 +76,50 @@ make type      # mypy --strict
 make test      # pytest + coverage
 make check     # las tres anteriores (lo mismo que corre CI)
 ```
+
+## Uso rápido (autenticación, ya funciona)
+
+```bash
+# 1. Arranca el servidor (crea la clave Ed25519 y la DB en .aegis/)
+cp .env.example .env
+uv run aegis serve
+
+# 2. Crea un usuario del proveedor local (el IdP de la demo)
+uv run aegis user add --email dev@mercadolibre.com --name "Tu Nombre"
+
+# 3. Autentícate: device flow en la terminal + navegador
+uv run aegis login
+#    → Abre http://127.0.0.1:8088/device e introduce el código que aparece
+
+# 4. Comprueba la identidad y el token
+uv run aegis whoami
+uv run aegis token | cut -d. -f1 | base64 -d 2>/dev/null   # header del JWT
+uv run aegis doctor                                        # permisos, reachability, identidad
+uv run aegis logout                                        # revoca en servidor y limpia cache
+```
+
+Con GitHub como IdP (`AEGIS_AUTH_PROVIDER=github`):
+
+```bash
+# El cliente hace el device flow de GitHub y entrega el token; el servidor lo
+# verifica llamando a /user y /user/emails (e-mail verificado y primario).
+export AEGIS_AUTH_PROVIDER=github AEGIS_GITHUB_CLIENT_ID=<tu-oauth-app>
+```
+
+### Qué implementa esta parte
+
+| Pieza | Detalle |
+|---|---|
+| Device Flow RFC 8628 | `device_code` secreto, `user_code` de 38 bits sin caracteres ambiguos, `slow_down` acumulativo persistido, expiración, single-use |
+| Tokens | JWT EdDSA con `kid`, allowlist de algoritmo (`alg:none` y confusión HS256 rechazadas), `aud`/`iss`/`typ` obligatorios, tiempos verificados con reloj inyectable |
+| Refresh | rotación + **detección de reuso** que revoca la familia completa (OAuth BCP §4.14.2) |
+| Scopes | conjunto cerrado con grafo de implicación; `override`/`admin` no pedibles; downscope auditado |
+| Binding | `token.email == commit.author.email` (o scope `analyze:any` para bots) |
+| Auditoría | log append-only con cadena de hashes verificable |
+| Secretos en disco | keyring del SO → fichero 0600; permisos ampliados ⇒ fallo explícito |
+| IdPs | `local` (email+password, scrypt, anti-enumeración) y `github` (token exchange, exige e-mail verificado) |
+
+155 tests, `ruff` y `mypy --strict` limpios, 82 % de cobertura.
 
 ---
 
@@ -126,8 +173,10 @@ cada push y en cada PR. **No requiere secretos**: los jobs `quality` (pre-commit
 
 - [x] **Paso 1 — Fundamentos**: contrato de datos, digest canónico, `errors`,
       scaffolding del repo, tooling (`ruff`/`mypy`/`pytest`), CI con pre-commit.
-- [ ] **Paso 2 — Auth**: OAuth 2.0 Device Flow + emisión/validación de tokens +
-      `aegis login`.
+- [x] **Paso 2 — Auth**: OAuth 2.0 Device Flow (RFC 8628), JWT EdDSA con
+      allowlist de algoritmo, rotación de refresh con detección de reuso, scopes
+      con implicación, binding identidad↔commit, auditoría encadenada, CLI
+      (`login`/`logout`/`whoami`/`token`/`doctor`/`user`) y API FastAPI.
 - [ ] **Paso 3 — Servidor**: FastAPI `POST /v1/analyze`, pipeline híbrido
       (SAST → LLM → validación estricta), prompts versionados, mitigación de
       prompt injection.

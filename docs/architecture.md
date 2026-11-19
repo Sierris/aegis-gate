@@ -161,7 +161,7 @@ Propiedades exigidas y por qué:
   *falsificarla* (firma Ed25519) y borrarla produce `MISSING_ATTESTATION` en CI,
   que es exactamente el resultado que queremos.
 
-### 3.4 Registro de auditoría
+### 3.4 Registro de auditoría  ✅ *implementado (paso 2)*
 
 Append-only en base de datos, encadenado con `canon.chain_hash`:
 
@@ -176,35 +176,113 @@ siendo verificable, que es lo que corre en CI sin secretos.
 Eventos: `analyze.allow|block|error`, `override.request|approve|deny`,
 `push.verified|rejected`, `auth.token_issued|revoked`, `policy.changed`.
 
+Ya en producción interna desde el paso 2: cada `device_approved`, cada refresh,
+cada logout y cada intento de downgrade de scope escribe un eslabón. Un test
+modifica una fila y comprueba que `verify_audit_chain()` lo detecta.
+
 ---
 
-## 4. Autenticación e identidad
+## 4. Autenticación e identidad  ✅ *implementado (paso 2)*
 
 **OAuth 2.0 Device Authorization Grant (RFC 8628)** y no Authorization Code: el
 hook corre en una terminal, a veces por SSH, y no puede recibir un callback HTTP.
 
 ```text
 $ aegis login
-→ Abre https://aegis.local/device e introduce el código: WDJB-MJHT
+
+  AEGIS · inicio de sesión
+  1. Abre: http://127.0.0.1:8088/device
+  2. Código: MSCM-JJXK
   (esperando autorización…)
-✓ Autenticado como jesierra20@gmail.com (scopes: analyze)
+
+  ✓ Autenticado como dev@mercadolibre.com (scopes: analyze)
+  cache: TokenCache(path=/tmp/aegis/token.json, backend=file)
 ```
 
-Detalles que importan:
+### 4.1 Flujo completo
 
-- **Access token corto (1 h) + refresh token** en `~/.config/aegis/token.json`
-  con permisos `0600`; nunca en el repo ni en variables de entorno del shell
-  (aparecerían en `/proc/<pid>/environ` y en los logs de CI).
-- **Scopes separados**: `analyze` ≠ `override`. Un token de análisis no puede
-  emitir un override; eso requiere `override` y, en el flujo de break-glass, la
-  aprobación de una **segunda identidad**.
-- **Binding identidad↔commit**: el servidor compara `sub` del token con
-  `commit.author.email`. Un commit cuyo autor no es el portador del token se
-  rechaza salvo que el token tenga scope `analyze:any` (uso: bots de CI).
-- **`nonce` por análisis**: el servidor rechaza un nonce repetido para el mismo
-  usuario, lo que impide reproducir una respuesta `allow` cacheada.
-- **`jti` por attestation**: permite revocar una attestation concreta sin tocar
-  el resto.
+```text
+CLI                    Servidor (FastAPI)                 Navegador del usuario
+ │  POST /v1/auth/device │                                        │
+ ├──────────────────────►│ crea device_code (secreto)             │
+ │◄── device_code ───────┤      user_code (8 chars, 38 bits)      │
+ │                       │      scope = requested ∩ issuable      │
+ │  "abre /device con MSCM-JJXK"                                  │
+ │                       │◄──────────── GET /device ──────────────┤
+ │                       │───────────── formulario ──────────────►│
+ │                       │◄──── POST /device (email+password) ────┤
+ │                       │  verifica identidad → aprueba el código│
+ │  POST /v1/auth/token  │                                        │
+ ├──────────────────────►│ pending → slow_down → tokens           │
+ │◄── access+refresh ────┤                                        │
+```
+
+### 4.2 Decisiones concretas
+
+- **El `device_code` y el refresh token se guardan hasheados** (SHA-256). Una fuga
+  de la base de datos no permite completar un flujo pendiente ni refrescar una
+  sesión robada. El `user_code` sí se guarda en claro: debe buscarse mientras el
+  usuario lo teclea, es efímero y no sirve sin el `device_code` que lo acompaña.
+- **`slow_down` acumula** (RFC 8628 §3.5): el intervalo crece +5 s y **se
+  persiste por dispositivo**, así que ignorar la indicación es cada vez más caro
+  (5→10→15… con techo de 60 s). Verificado en `test_slow_down_grows_the_interval_persistently`.
+- **Rotación de refresh tokens con detección de reuso** (OAuth 2.0 Security BCP
+  §4.14.2): cada refresh emite uno nuevo y enlaza con el anterior. Si aparece un
+  token ya rotado, hay dos poseedores del secreto ⇒ se **revoca la familia
+  completa**. Es el comportamiento que exige el BCP y el que impide el
+  "refresh token eterno" que roban los infostealers.
+- **Downscope, nunca upscope**: el servidor intersecta lo pedido con lo emisible.
+  Pedir `admin` devuelve `analyze` (con `scope_downgraded=1` en la fila y un
+  evento `policy.changed` en el audit log), en lugar de fallar, para no filtrar la
+  política por mensajes de error. Verificado en
+  `test_scope_escalation_is_downgraded_and_audited`.
+- **Scopes separados**: `analyze` ≠ `analyze:any` ≠ `override` ≠ `admin`.
+  `override` y `admin` **no son pedibles** por el cliente (`NON_REQUESTABLE`): se
+  conceden fuera de banda. Un token de análisis no puede emitir un override.
+- **Binding identidad↔commit** (`auth/binding.py`): se compara el e-mail del token
+  con `commit.author.email`, normalizado con el mismo helper que usa el digest.
+  Un commit ajeno se rechaza salvo con `analyze:any` (bots). La comparación es
+  case-insensitive y sobre la forma normalizada, para que digest y binding no
+  puedan discrepar sobre qué es "la misma identidad".
+- **`jti` por token/attestation**: permite revocar un artefacto concreto sin tocar
+  el resto de la familia.
+- **Un solo mensaje de error en la página pública**: "no existe el código",
+  "contraseña incorrecta" y "cuenta deshabilitada" producen el mismo texto. El
+  motivo real va al log del servidor. Una página pública no puede ser un oráculo
+  de login ni de enumeración de usuarios.
+
+### 4.3 ¿Por qué el `access_token` sí se cachea?
+
+Primera iteración: no cachear el access token (vive 1 h, es barato de emitir). Al
+medirlo en el caso real apareció el problema: **cada `git commit` hacía un
+`POST /v1/auth/refresh`** (que además rota el refresh token y escribe auditoría)
+antes de poder empezar el análisis. Con un hook en el camino crítico eso es
+latencia y ruido gratuitos.
+
+Ahora se guarda junto al refresh token, en el mismo fichero 0600. No amplía
+materialmente el riesgo: el refresh token está en ese fichero y puede emitir
+access tokens a demanda, así que añadir un token de 1 h cambia el radio de impacto
+de forma marginal. Lo que **sí** se mantiene: la expiración se re-verifica al
+leer, con 60 s de margen.
+
+### 4.4 Protección del secreto en disco
+
+Orden de preferencia: **keyring del SO** → **fichero 0600 fuera del repo**. Nunca
+el repositorio, nunca el `.gitconfig`, y variables de entorno solo con
+`AEGIS_TOKEN` explícito (CI), desactivable con `AEGIS_ALLOW_ENV_TOKEN=0`.
+
+Si el fichero aparece con permisos abiertos, `aegis` **falla** en lugar de
+seguir usando el token: unos permisos que alguien amplió son un incidente, no un
+bug cosmético. Mismo criterio para la clave de firma del servidor.
+
+```text
+$ aegis doctor
+aegis 0.1.0
+server_url        : http://127.0.0.1:8088
+token_cache       : /tmp/aegis/token.json (mode=600)
+fail_mode         : closed
+auth              : OK as dev@mercadolibre.com scopes=['analyze']
+```
 
 ---
 
@@ -431,6 +509,33 @@ semgrep/bandit y de hooks es Python, y el arranque del hook se paga en el venv
 cacheado de pre-commit, no en runtime.
 **Consecuencia:** el hook tiene un coste de arranque de proceso Python (~150 ms)
 que se mitiga manteniendo el cliente sin dependencias pesadas (solo `pydantic`).
+
+### ADR-009 — Device Flow propio (IdP local) **y** token exchange (GitHub)
+**Contexto:** el challenge pide OAuth 2.0 con un IdP real (Fury/Tiger), pero la
+demo tiene que funcionar sin credenciales de terceros.
+**Decisión:** dos caminos sobre el mismo emisor de tokens:
+(a) Device Flow propio contra un IdP `local` (email+password, scrypt) — es el que
+usan los tests, CI y la demo; (b) `POST /v1/auth/exchange`: el cliente hace el
+device flow de GitHub y entrega el token upstream, que el servidor verifica
+llamando a `/user` + `/user/emails` y mapea a identidad.
+**Alternativas:** (a) solo redirect flow web — añade `redirect_uri`, sesiones y
+CSRF de estado a nuestro lado, y una CLI no puede recibir callbacks; (b) solo
+GitHub — la demo y CI quedan acopladas a un tercero y a un secreto.
+**Consecuencia:** el e-mail debe ser **verificado y primario** en GitHub; un
+e-mail no verificado es dato controlado por el atacante y rompería justo el
+binding en el que se apoya la atribución. Se rechaza explícitamente (test
+`test_unverified_primary_email_is_refused`).
+
+### ADR-010 — La verificación temporal del JWT es nuestra, no de PyJWT
+**Contexto:** PyJWT lee `datetime.now()` internamente.
+**Decisión:** PyJWT verifica firma/iss/aud; `exp`/`nbf`/`iat` los comprueba
+`_check_temporal()` contra un reloj inyectable.
+**Motivo:** sin esto, la ventana de expiración es una propiedad del reloj del host
+(no reproducible, no testeable sin `sleep`), y no hay un único sitio donde leer la
+semántica de `leeway`. Con esto, los 40 tests de auth corren en <1 s y la política
+temporal es una función pura.
+**Consecuencia:** si se sube de versión PyJWT hay que mantener el flag
+`verify_exp: False`; está documentado en el módulo y cubierto por tests.
 
 ### ADR-008 — Dos modos de evaluación: síncrono (default) y asíncrono
 **Contexto:** el enunciado permite notificar al dev por otro portal.

@@ -27,18 +27,19 @@ classifiers = [
 dependencies = [
   "pydantic>=2.9,<3",
   "pydantic-settings>=2.4,<3",
+  # HTTP client used by both the CLI and the server (GitHub token exchange).
+  "httpx>=0.27",
+  # JWS/JWT: verified EdDSA only, with an explicit algorithm allowlist.
+  "pyjwt[crypto]>=2.9",
 ]
 
 [project.optional-dependencies]
-# Server-side stack (step 3+): API, LLM providers, persistence.
+# Server-side stack. Persistence is stdlib sqlite3 + hand-written SQL on
+# purpose (see auth/store.py): no ORM between a security component and its data.
 server = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  "httpx>=0.27",
-  "pyjwt[crypto]>=2.8",
-  "sqlalchemy>=2.0",
-  "aiosqlite>=0.20",
-  "jinja2>=3.1",
+  # Upstream identity providers (GitHub) and the LLM adapters in step 3.
   "pyyaml>=6.0",
 ]
 # Deterministic pre-filter used before the LLM call.
@@ -71,6 +72,9 @@ dev = [
   "ruff>=0.17",
   "mypy>=1.11",
   "pre-commit>=3.8",
+  # TestClient + respx-style transport injection for the API tests.
+  "anyio>=4.4",
+  "httpx2>=2.16.2",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -120,7 +124,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "PLR2004", "ARG001", "ARG002"]
+# Tests legitimately: assert (S101), use literal fixture passwords (S105/S106),
+# reach into internals to prove the audit chain detects tampering (SLF001),
+# import inside fixtures to keep module import cost out of the common path, and
+# split assertions deliberately for clearer failure messages.
+"tests/*" = [
+  "S101", "S105", "S106", "S108", "SLF001",
+  "PLR2004", "ARG001", "ARG002", "RUF059",
+  "PT018", "PLC0415", "SIM117", "PLR0911",
+]
 "src/aegis/cli/*" = ["T20"]  # CLI genuinely prints to the terminal
 
 [tool.mypy]
