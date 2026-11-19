@@ -47,7 +47,7 @@ SCHEMA_VERSION: Literal["1"] = "1"
 #: is a much bigger deal than a field rename.
 # The value is imported (not duplicated) and its Literal type is enforced by
 # mypy, so the two declarations can never drift apart.
-DIGEST_VERSION: Literal["aegis-digest/v1"] = canon.DIGEST_VERSION
+DIGEST_VERSION: Literal["aegis-digest/v2"] = canon.DIGEST_VERSION
 
 Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 GitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
@@ -180,7 +180,9 @@ class CommitRef(StrictModel):
     parent_sha: GitSha | None = None
     author: Identity
     committer: Identity
-    message_sha256: Sha256Hex
+    #: Informational only, *never* part of the digest: a pre-commit hook runs
+    #: before git composes the message (see ``canon`` module docstring).
+    message_sha256: Sha256Hex | None = None
     subject: str | None = Field(default=None, max_length=200)
     is_merge_commit: bool = False
     is_amend: bool = False
@@ -334,7 +336,7 @@ class AnalyzeRequest(StrictModel):
     """
 
     schema_version: Literal["1"] = SCHEMA_VERSION
-    digest_version: Literal["aegis-digest/v1"] = DIGEST_VERSION
+    digest_version: Literal["aegis-digest/v2"] = DIGEST_VERSION
     commit_digest: Sha256Hex
     commit: CommitRef
     files: tuple[StagedFile, ...] = ()
@@ -357,7 +359,6 @@ class AnalyzeRequest(StrictModel):
             repo_id=self.commit.repo_id,
             parent_sha=self.commit.parent_sha,
             author_email=self.commit.author.email,
-            message_sha256=self.commit.message_sha256,
             entries=[(f.change.value, f.mode, f.blob_sha256, f.path, f.old_path) for f in self.files],
         )
         if expected != self.commit_digest:
@@ -655,6 +656,10 @@ class UserInfo(StrictModel):
 # Audit
 # --------------------------------------------------------------------------- #
 class AuditAction(enum.StrEnum):
+    #: A request arrived (client fingerprint, policy requested). Separate from the
+    #: verdict on purpose: folding it into ``analyze.allow`` would inflate the
+    #: "commits allowed" metric and hide the real allow/block ratio.
+    ANALYZE_REQUEST = "analyze.request"
     ANALYZE_ALLOW = "analyze.allow"
     ANALYZE_BLOCK = "analyze.block"
     ANALYZE_ERROR = "analyze.error"

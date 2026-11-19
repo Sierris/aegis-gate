@@ -106,13 +106,11 @@ def make_request(
         parent_sha=parent,
         author=Identity(name="Dev", email=author),
         committer=Identity(name="Dev", email=author),
-        message_sha256=canon.message_digest("feat: demo"),
     )
     digest = canon.compute_commit_digest(
         repo_id=commit.repo_id,
         parent_sha=commit.parent_sha,
         author_email=commit.author.email,
-        message_sha256=commit.message_sha256,
         entries=[(f.change.value, f.mode, f.blob_sha256, f.path, f.old_path) for f in staged],
     )
     return AnalyzeRequest(

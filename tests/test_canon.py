@@ -19,7 +19,6 @@ REPO = "git@github.com:MercadoLibre/appsec-demo.git"
 PARENT = "a" * 40
 BLOB1 = "1" * 64
 BLOB2 = "2" * 64
-MSG = canon.message_digest("feat: add endpoint")
 
 
 def _digest(
@@ -33,7 +32,6 @@ def _digest(
         repo_id=repo_id,
         parent_sha=parent_sha,
         author_email=email,
-        message_sha256=MSG,
         entries=entries,
     )
 
@@ -141,6 +139,21 @@ def test_digest_is_stable_and_matches_golden_value() -> None:
     assert _digest(entries) == _GOLDEN
 
 
+def test_commit_message_does_not_affect_the_digest() -> None:
+    """A pre-commit hook cannot observe the message (see canon's docstring).
+
+    v1 hashed it and that was a design error discovered in step 4: `git commit -m`
+    has no COMMIT_EDITMSG at hook time, and after a first commit the file holds the
+    *previous* message. An unobservable input cannot be bound.
+    """
+    entries = [("A", "100644", BLOB1, "src/app.py", None)]
+    payload_a = canon.commit_digest_payload(
+        repo_id=REPO, parent_sha=PARENT, author_email="d@e.com", entries=entries
+    )
+    assert "message" not in payload_a
+    assert _digest(entries) == _digest(entries)
+
+
 def test_digest_changes_when_any_field_changes() -> None:
     base = [("A", "100644", BLOB1, "src/app.py", None)]
     variants = {
@@ -167,7 +180,6 @@ def test_root_commit_uses_null_parent_sentinel() -> None:
         repo_id=REPO,
         parent_sha=None,
         author_email="dev@mercadolibre.com",
-        message_sha256=MSG,
         entries=[],
     )
     assert "parent=-\n" in payload
@@ -176,7 +188,7 @@ def test_root_commit_uses_null_parent_sentinel() -> None:
 def test_rename_entry_records_source_path() -> None:
     entries = [("R", "100644", BLOB1, "src/new.py", "src/old.py")]
     payload = canon.commit_digest_payload(
-        repo_id=REPO, parent_sha=PARENT, author_email="d@e.com", message_sha256=MSG, entries=entries
+        repo_id=REPO, parent_sha=PARENT, author_email="d@e.com", entries=entries
     )
     assert "file R 100644 " + BLOB1 + " src/new.py -> src/old.py" in payload
 
@@ -197,7 +209,6 @@ def test_unknown_digest_version_is_rejected() -> None:
             repo_id=REPO,
             parent_sha=PARENT,
             author_email="d@e.com",
-            message_sha256=MSG,
             entries=[],
         )
 
@@ -258,4 +269,4 @@ def test_chain_hash_keyed_mode_requires_the_key() -> None:
 
 #: Computed with the v1 format. Regenerate only with an explicit digest-version
 #: bump — every historical attestation becomes unverifiable otherwise.
-_GOLDEN = "fc4686151588a707e67b677475165157f06df105cb91944e9824904ddc010c73"
+_GOLDEN = "15f268668278ded13513eca9964bcb0c47496007d4ce9ab69e34bbaf30b94e64"

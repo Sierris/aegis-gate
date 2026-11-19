@@ -82,6 +82,38 @@ _AUTH_FILES: tuple[Path, ...] = (
 )
 
 
+def resolve_api_key_source(
+    explicit: str | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    auth_files: Iterable[Path] = _AUTH_FILES,
+) -> tuple[str, str]:
+    """Find the Command Code API key and report **where it came from**.
+
+    Returning the provenance is not a nicety. When a key is picked up from a file
+    another tool wrote (the pi host auth file, the Command Code CLI file), nothing
+    in the environment says so, and the next person to rotate a credential has no
+    idea which one is in use. ``aegis doctor`` prints this line, so the answer to
+    "which key am I running with?" is always one command away.
+
+    Order: explicit setting → ``AEGIS_LLM_API_KEY`` → ``COMMAND_CODE_API_KEY`` →
+    ``COMMANDCODE_API_KEY`` → the auth files, in the order the official CLI uses.
+    """
+    environ = env if env is not None else dict(os.environ)
+    if explicit and explicit.strip():
+        return explicit.strip(), "settings (AEGIS_LLM_API_KEY)"
+    for var in ("AEGIS_LLM_API_KEY", "COMMAND_CODE_API_KEY", "COMMANDCODE_API_KEY"):
+        value = environ.get(var, "").strip()
+        if value:
+            return value, f"environment ({var})"
+    for path in auth_files:
+        resolved = Path(path).expanduser()
+        key = _read_auth_file(resolved)
+        if key:
+            return key, f"auth file ({resolved})"
+    return "", "not found"
+
+
 def resolve_api_key(
     explicit: str | None = None,
     *,
@@ -94,18 +126,8 @@ def resolve_api_key(
     a missing key is fatal — the ``fake`` provider exists precisely so that a CI
     run can analyse commits with no credentials at all.
     """
-    environ = env if env is not None else dict(os.environ)
-    if explicit and explicit.strip():
-        return explicit.strip()
-    for var in ("AEGIS_LLM_API_KEY", "COMMAND_CODE_API_KEY", "COMMANDCODE_API_KEY"):
-        value = environ.get(var, "").strip()
-        if value:
-            return value
-    for path in auth_files:
-        key = _read_auth_file(Path(path).expanduser())
-        if key:
-            return key
-    return ""
+    key, _ = resolve_api_key_source(explicit, env=env, auth_files=auth_files)
+    return key
 
 
 def _read_auth_file(path: Path) -> str:
@@ -575,4 +597,5 @@ __all__ = [
     "USER_AGENT",
     "CommandCodeProvider",
     "resolve_api_key",
+    "resolve_api_key_source",
 ]

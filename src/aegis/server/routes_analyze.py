@@ -112,7 +112,7 @@ def analyze(
         # Client fingerprint is advisory: recorded for drift detection (an old hook
         # may compute an outdated digest version), never trusted for decisions.
         ctx.store.append_audit(
-            action=AuditAction.ANALYZE_ALLOW,
+            action=AuditAction.ANALYZE_REQUEST,
             actor=actor,
             detail={"event": "client_seen", "client": x_aegis_client[:64]},
             repo_id=repo_id,

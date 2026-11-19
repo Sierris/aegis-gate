@@ -96,7 +96,7 @@ verificación en CI de una attestation firmada**. Esto convierte E1–E3 y E8 en
 
 ---
 
-## 3. El modelo de integridad
+## 3. El modelo de integridad  ✅ *implementado (paso 4: hook + verificación local)*
 
 ### 3.1 Qué se firma exactamente
 
@@ -146,7 +146,7 @@ Propiedades exigidas y por qué:
 - **Valor dorado en un test** ⇒ cambiar el formato rompe CI por su nombre, no
   por un `KeyError` tres semanas después.
 
-### 3.3 Transporte de la attestation: `git notes`
+### 3.3 Transporte de la attestation: `git notes`  ✅ *implementado*
 
 `refs/notes/aegis` guarda `{"commit_digest", "jws", "analysis_id"}` por commit.
 
@@ -611,6 +611,54 @@ con fecha de ayer no es una prueba de hoy. Los veredictos `degraded` no se cache
 dependen de una condición transitoria.
 **Consecuencia:** la huella de política incluye los umbrales, no solo el nombre del
 perfil, para que un cambio de política no quede tapado por el TTL.
+
+### ADR-014 — El mensaje del commit NO forma parte del digest (v1 → v2)
+**Contexto:** v1 hasheaba `message_sha256` junto al árbol.
+**Hallazgo (paso 4):** un hook `pre-commit` corre **antes** de que git componga el
+mensaje. Se verificó empíricamente:
+
+```text
+$ git commit -m "mensaje"
+--- pre-commit ---
+COMMIT_EDITMSG: NO existe
+
+$ # segundo commit de la sesión
+COMMIT_EDITMSG existe: [mensaje real del commit]   <- pero es el ANTERIOR
+```
+
+**Decisión:** `aegis-digest/v2` = (repo, parent, autor, entradas). El mensaje queda
+como campo informativo del contrato y **fuera** del hash.
+**Alternativas descartadas:** (a) aceptar `null` en la verificación — es un bypass
+permanente; (b) mover el análisis a `commit-msg` — el enunciado pide pre-commit y se
+perdería el feedback antes del editor.
+**Consecuencia:** un atacante puede cambiar el mensaje sin invalidar la attestation.
+Se acepta: el mensaje no puede ocultar código, y el objeto que importa (árbol +
+autor + padre) sí está atado. El cambio de versión lo forzó el test del valor dorado,
+que es exactamente para lo que existe.
+
+### ADR-015 — Dos stages: pre-commit analiza, post-commit ancla
+**Contexto:** la attestation debe viajar con el commit como git note, y #3.3 la
+consideraba escrita por el hook.
+**Hallazgo (paso 4):** en `pre-commit` **no existe** el objeto commit. `HEAD` en ese
+momento es el *padre*: escribir la nota ahí probaría el commit anterior.
+**Decisión:** `pre-commit` deja la attestation en `.git/aegis/pending.json` (0600);
+`post-commit` recalcula el digest del commit recién creado y, **solo si coincide**,
+escribe la nota.
+**Beneficio inesperado:** el control de integridad se ejecuta en cada commit y no
+solo en CI, con la misma función que usará el verificador. Un desajuste (amend,
+`--no-verify` con otro contenido, hook manipulado) deja el commit sin attestation.
+**Consecuencia:** el manifiesto declara dos hooks (`aegis-analyze`,
+`aegis-attest`), y `default_install_hook_types` debe incluir `post-commit`.
+
+### ADR-016 — Credencial del LLM: cadena explícita con procedencia
+**Contexto:** el servidor necesita una clave de Command Code y no hay una única
+convención de facto.
+**Decisión:** orden fijo (`AEGIS_LLM_API_KEY` → `COMMAND_CODE_API_KEY` →
+`~/.commandcode/auth.json` → `~/.pi/agent/auth.json`) y **procedencia visible** en
+`aegis doctor` (`llm_key_source`).
+**Motivo:** leer la credencial de otra herramienta es cómodo pero opaco; sin
+procedencia, quien rote una clave no sabe cuál está en uso. La clave nunca sale del
+servidor: el hook solo envía el token de usuario de AEGIS.
 
 ### ADR-009 — Device Flow propio (IdP local) **y** token exchange (GitHub)
 **Contexto:** el challenge pide OAuth 2.0 con un IdP real (Fury/Tiger), pero la

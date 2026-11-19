@@ -125,6 +125,61 @@ export AEGIS_AUTH_PROVIDER=github AEGIS_GITHUB_CLIENT_ID=<tu-oauth-app>
 
 ## Motor de análisis (paso 3)
 
+### Dónde se pone la API key y cómo se elige el modelo
+
+AEGIS **no trae ninguna clave**. El asistente que te ayudó a escribir el código no
+usa ninguna clave del proyecto: su propia inferencia va por el harness (`pi`), que
+es un proceso distinto. Lo que sí ocurrió es que AEGIS encontró, ya existente en
+esta máquina, la credencial que había guardado `pi` al hacer `/login`.
+
+La resolución es **una cadena explícita, en este orden**, y `aegis doctor` imprime
+cuál se usó:
+
+| Prioridad | Origen | Cuándo usarlo |
+|---|---|---|
+| 1 | `AEGIS_LLM_API_KEY` en `.env` o entorno | Producción y CI. Explícito y visible. |
+| 2 | `COMMAND_CODE_API_KEY` en el entorno | Cuando ya es la variable de tu shell. |
+| 3 | `~/.commandcode/auth.json` | La ruta oficial del CLI de Command Code. **Recomendada en local.** |
+| 4 | `~/.pi/agent/auth.json` | Atajo de conveniencia: reutiliza la sesión de `pi`. Cómodo, pero acoplado a otra herramienta. |
+
+```bash
+# opción recomendada para tu máquina (fuera del repo, file mode 0600)
+mkdir -p ~/.commandcode
+cat > ~/.commandcode/auth.json <<'JSON'
+{"commandCode": {"type": "api", "key": "user_TU_CLAVE_AQUI"}}
+JSON
+chmod 600 ~/.commandcode/auth.json
+
+# o, mejor para despliegue: explícito en .env (que está gitignored)
+echo 'AEGIS_LLM_API_KEY=user_TU_CLAVE_AQUI' >> .env
+```
+
+Para saber qué está usando ahora mismo:
+
+```bash
+$ aegis doctor
+llm_provider      : commandcode
+llm_model         : gpt-6-luna
+llm_wire          : auto
+llm_api_key       : user_…GTuz (len 93)
+llm_key_source    : auth file (/Users/r00t/.pi/agent/auth.json)   ← de aquí sale
+```
+
+**El modelo** se elige con `AEGIS_LLM_MODEL` (por defecto `gpt-6-luna`). No hay
+lista hardcodeada: `aegis models` consulta el catálogo y lista solo lo que **tu
+plan** sirve (los `claude-*` requieren plan Pro y responden `403 MODEL_NOT_IN_PLAN`).
+
+```bash
+aegis models            # todo el catálogo con sus endpoints
+aegis models claude     # filtrado
+```
+
+**La clave nunca llega al cliente del hook**: el hook solo envía el token de
+usuario de AEGIS (paso 2). La credencial del LLM vive exclusivamente en el
+servidor, así que comprometer la máquina de un desarrollador no da acceso al
+modelo. `AEGIS_LLM_PROVIDER=fake` permite ejecutar todo el pipeline en CI sin
+ninguna credencial.
+
 **Proveedor: [Command Code](https://commandcode.ai/docs/provider) Provider API**
 (`https://api.commandcode.ai/provider/v1`). Se eligió porque expone los tres wires
 estándar del mercado (`/chat/completions`, `/responses`, `/messages`), lo que
@@ -211,6 +266,81 @@ literal del fragmento enviado.
   para no pagar dos round-trips por commit.
 
 ---
+
+## El hook en acción (paso 4)
+
+Instalación en un repositorio de producto:
+
+```yaml
+# .pre-commit-config.yaml
+default_install_hook_types: [pre-commit, post-commit]
+repos:
+  - repo: https://github.com/Sierris/aegis-gate
+    rev: v0.1.0
+    hooks:
+      - id: aegis-analyze      # pre-commit: analiza el índice
+      - id: aegis-attest       # post-commit: verifica el digest y ancla la prueba
+```
+
+Resultado real sobre [`examples/vulnerable/user_lookup.py`](examples/vulnerable/user_lookup.py):
+
+```text
+$ git commit -m "feat(api): endpoint /user"
+
+AEGIS · análisis GenAI server-side (OWASP Top 10)........................Failed
+- hook id: aegis-analyze
+- exit code: 1
+
+🚨 Vulnerabilidad detectada — commit rechazado
+   Autor del commit: dev@mercadolibre.com
+
+1. [HIGH] SQL injection through request parameter
+   Categoría: A03:2021   CWE-89   (users.py:14)
+   Confianza: 99%   Regla: A03-SQLI-001
+
+   Riesgo:
+     A caller can control the `/user` route's `id` query parameter, which is
+     interpolated directly into the SQL statement.
+   Solución sugerida:
+     Use a parameterized query so SQLite treats the supplied ID as data.
+   Patch propuesto:
+     row = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+```
+
+El commit **no se crea** (HEAD no avanza). Tras corregirlo, el mismo comando pasa
+y la attestation queda anclada al commit:
+
+```text
+$ git notes --ref=aegis show HEAD
+{"decision": "allow", "analysis_id": "an_0e52...", "commit_digest": "91f375aa…",
+ "attestation": "eyJhbGciOiJFZERTQSIsImtpZCI6IjdpblU3SGVY…”
+```
+
+### Por qué hacen falta dos stages
+
+El `pre-commit` se ejecuta **antes** de que git cree el commit, así que no existe
+objeto al que anclar la prueba (`git rev-parse HEAD` devuelve el *padre* — anclar ahí
+sería probar el commit anterior). Por eso:
+
+| Stage | Qué hace | Qué NO puede hacer |
+|---|---|---|
+| `pre-commit` (`aegis-hook`) | analiza el índice, bloquea o deja la attestation en `.git/aegis/pending.json` | escribir la nota: el commit no existe |
+| `post-commit` (`aegis-attest`) | recalcula el digest del commit **real** y, solo si coincide, escribe la nota | bloquear: el commit ya está hecho |
+
+Ese recálculo es el control de integridad ejecutándose en **cada commit**, no solo
+en CI: es la misma función que usará el verificador, y si los dos digests no
+coinciden no se adjunta nada. Verificado en
+[`tests/test_gitx.py::test_hook_digest_equals_verifier_digest`](tests/test_gitx.py)
+contra repositorios git reales.
+
+### Evasiones probadas en vivo
+
+| Evasión | Resultado |
+|---|---|
+| `git commit --no-verify` | el commit se crea **sin attestation** → CI lo rechazará (paso 5) |
+| `git commit --amend` tras un `allow` | el commit nuevo no tiene nota; el digest cambió → detectado |
+| Analizar A y commitear B con `--no-verify` | `post-commit` compara digests, no coincide y **no ancla** nada |
+| `git commit` con el servidor caído | `fail_mode=closed` bloquea con explicación; `open` permite dejando constancia |
 
 ## Análisis de resultados
 
@@ -300,10 +430,12 @@ cada push y en cada PR. **No requiere secretos**: los jobs `quality` (pre-commit
       prefilter determinista propio (13 reglas, 4 categorías), prompts versionados
       por hash, validación estricta con anclaje de evidencia, cross-check
       anti-inyección, caché de veredictos, attestation EdDSA y `POST /v1/analyze`.
-- [ ] **Paso 4 — Hook**: `aegis-hook` como pre-commit, extracción de hunks del
-      índice, render del mensaje de bloqueo, git notes con la attestation.
-- [ ] **Paso 5 — Integridad end-to-end**: firmado de attestations, verificación
-      en `pre-push` y en GitHub Actions.
+- [x] **Paso 4 — Hook**: `aegis-hook` (pre-commit) + `aegis-attest` (post-commit),
+      lectura del índice con plumbing, fragmentos por hunks, `fail_mode` auditado,
+      attestation como git note **previa verificación** del digest real.
+- [ ] **Paso 5 — Integridad end-to-end**: `aegis verify` (offline con JWKS),
+      verificación en `pre-push` y en GitHub Actions, detección de commits sin
+      attestation enviados con `--no-verify`.
 - [ ] **Paso 6 — Ejemplos y demo**: `examples/vulnerable/*` vs `examples/clean/*`,
       resultados esperados, monitoreo de evasiones.
 - [ ] **Paso 7 — README final**: arquitectura, guía de uso, resumen técnico,

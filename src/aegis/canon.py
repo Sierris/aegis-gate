@@ -18,8 +18,16 @@ Hence the digest must be a pure function of git object data only:
     * repository identity (``host/owner/repo``)
     * parent commit SHA (the base the diff is taken against)
     * author identity (name + e-mail, normalised)
-    * commit message (hashed, trailers stripped)
     * the staged file *entries*: (change kind, mode, blob sha256, path, old_path)
+
+The commit message is **not** part of v2, and the reason is empirical: a
+``pre-commit`` hook runs *before* git composes the message. ``.git/COMMIT_EDITMSG``
+does not exist for ``git commit -m`` and, on the second commit of a session,
+contains the **previous** message. Binding a value the client cannot observe would
+leave only two options — a permanent mismatch or a verification path that accepts
+"unknown" — and the second one is a bypass. v1 included it; v2 removes it and the
+golden test in ``tests/test_canon.py`` exists to force exactly this kind of change
+to be deliberate.
 
 Deliberate exclusions and why:
 
@@ -60,7 +68,7 @@ from typing import Final, Literal, TypeAlias
 
 #: Version tag for the line format below. Any change to the layout MUST bump it,
 #: otherwise old and new attestations would be silently comparable.
-DIGEST_VERSION: Final[Literal["aegis-digest/v1"]] = "aegis-digest/v1"
+DIGEST_VERSION: Final[Literal["aegis-digest/v2"]] = "aegis-digest/v2"
 
 #: Sentinel written where a value is legitimately absent (root commit parent,
 #: deleted blob, no rename source). Using a sentinel instead of an empty string
@@ -151,10 +159,20 @@ def normalize_repo_id(repo_id: str) -> str:
     # Treating SCP-like as a URL silently produces host="github.com" and
     # path="repo" (the owner segment is swallowed by the port split), which would
     # make two different repositories share an attestation audience.
+    scheme = ""
     if "://" in raw:
-        after_scheme = raw.split("://", 1)[1]
+        scheme, _, after_scheme = raw.partition("://")
+        scheme = scheme.lower()
         if "@" in after_scheme:
             after_scheme = after_scheme.rsplit("@", 1)[1]
+        if after_scheme.startswith("/") or scheme == "file":
+            # Local path (``file:///tmp/x``). It has no host, so the scheme becomes
+            # the namespace: a local repository can never collide with a hosted one,
+            # and the same checkout path keeps a stable identity.
+            local_path = after_scheme.strip("/").lower()
+            if not local_path:
+                raise ValueError(f"cannot derive a repository id from {repo_id!r}")
+            return f"{scheme or 'file'}/{local_path}"
         host_part, _, path_part = after_scheme.partition("/")
         host = host_part.split(":", 1)[0]
         path = path_part
@@ -276,7 +294,6 @@ def commit_digest_payload(
     repo_id: str,
     parent_sha: str | None,
     author_email: str,
-    message_sha256: str,
     entries: Iterable[FileEntry],
 ) -> str:
     """Build the canonical text whose SHA-256 *is* the commit digest.
@@ -318,7 +335,6 @@ def commit_digest_payload(
         f"repo={normalize_repo_id(repo_id)}",
         f"parent={parent_sha or _NULL}",
         f"author={author_email.strip().lower()}",
-        f"message_sha256={message_sha256}",
         f"files={len(rows)}",
         *[row for row, _ in rows],
     ]

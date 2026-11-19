@@ -57,6 +57,9 @@ server = [
 # Hook entrypoint (git passes staged filenames; we ignore them and re-derive the
 # staged set from the index so a partial `git add -p` cannot be bypassed).
 aegis-hook = "aegis.cli.hook:main"
+# post-commit: binds the attestation to the commit object that now exists, after
+# verifying that its digest matches what was analysed.
+aegis-attest = "aegis.cli.hook:attest_main"
 # Admin/developer CLI: login, analyze manually, verify commits, override.
 aegis = "aegis.cli.main:main"
 # Server.
@@ -138,7 +141,7 @@ ignore = [
 "examples/**" = ["S", "UP", "T20", "ARG", "DTZ", "PLR2004", "E501"]
 
 "tests/*" = [
-  "S101", "S105", "S106", "S108", "SLF001",
+  "S101", "S103", "S105", "S106", "S108", "S603", "S607", "SLF001",
   "PLR2004", "ARG001", "ARG002", "RUF059",
   "PT018", "PLC0415", "SIM117", "PLR0911",
 ]

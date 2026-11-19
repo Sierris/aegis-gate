@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# Manifiesto para consumir AEGIS como hook de pre-commit desde OTRO repositorio:
+#
+#   repos:
+#     - repo: https://github.com/Sierris/aegis-gate
+#       rev: v0.1.0            # pin a un tag, no a una rama
+#       hooks:
+#         - id: aegis-analyze
+#           args: []
+#
+# `pass_filenames: false` es deliberado y no negociable: el hook vuelve a derivar
+# el conjunto del índice (el contrato recalcula el commit_digest a partir de
+# `files`), así que una lista de ficheros calculada por porcelain no solo sobra,
+# sino que puede discrepar con lo que git va a commitear (git add -p, git add -N).
+# ---------------------------------------------------------------------------
+- id: aegis-analyze
+  name: "AEGIS · análisis GenAI server-side (OWASP Top 10)"
+  description: >
+    Envía el contenido del índice al servidor de análisis, que razona con un LLM
+    sobre OWASP Top 10 (A01, A02, A03, A10), y bloquea el commit con explicación y
+    parche sugerido. Adjunta una attestation firmada (git note) que CI verifica.
+  entry: aegis-hook
+  language: python
+  # Una sola invocación por commit: el hook analiza el índice completo, no ficheros.
+  pass_filenames: false
+  require_serial: true
+  stages: [pre-commit]
+  # Si el hook tarda demasiado, git aborta; el server tiene su propio timeout.
+  verbose: false
+
+- id: aegis-attest
+  name: "AEGIS · adjuntar attestation al commit"
+  description: >
+    Etapa post-commit: recalcula el digest del commit recién creado y, solo si
+    coincide con el que se analizó, adjunta la attestation firmada como git note.
+    Un desajuste (amend, hook manipulado) deja el commit sin attestation y CI lo
+    rechaza.
+  entry: aegis-attest
+  language: python
+  pass_filenames: false
+  require_serial: true
+  stages: [post-commit]
+  always_run: true
+  verbose: false

@@ -30,6 +30,7 @@ from aegis.auth.provider import LocalIdentityProvider
 from aegis.auth.store import AuthStore
 from aegis.config import get_client_settings, get_server_settings
 from aegis.errors import AegisError
+from aegis.llm.commandcode import resolve_api_key_source
 from aegis.server.main import main as server_main
 
 PROG = "aegis"
@@ -116,6 +117,21 @@ def cmd_doctor() -> int:
     print(f"token_cache       : {settings.token_cache} ({cache_mode_report(settings.token_cache)})")
     print(f"fail_mode         : {settings.fail_mode}")
     print(f"env_token_allowed : {settings.allow_env_token}")
+    # --- LLM side: which model, and crucially *which key* --------------
+    llm = get_server_settings()
+    # Pass the *raw* setting, not ``llm.llm_key``: that property is already the
+    # resolved key, so attributing it back to "settings" would always be wrong and
+    # the whole point of the provenance line is to be right.
+    raw_explicit = llm.llm_api_key.get_secret_value() if llm.llm_api_key else None
+    key, source = resolve_api_key_source(raw_explicit)
+    preview = f"{key[:5]}…{key[-4:]} (len {len(key)})" if key else "(ninguna)"
+    print(f"llm_provider      : {llm.llm_provider}")
+    print(f"llm_model         : {llm.llm_model}")
+    print(f"llm_wire          : {llm.llm_wire}")
+    print(f"llm_api_key       : {preview}")
+    print(f"llm_key_source    : {source}")
+    print(f"prompt            : {llm.prompt_dir}/{llm.prompt_file}")
+
     try:
         with AuthClient(settings) as client:
             info = client.whoami()

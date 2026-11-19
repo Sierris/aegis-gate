@@ -72,13 +72,29 @@ repos:
         files: ^(src|tests)/
         require_serial: true
 
-# Los pasos 3–5 añaden aquí el hook AEGIS (declarado `local` mientras el cliente
-# está en desarrollo) y el verificador de integridad en pre-push:
-#
-#   - id: aegis-analyze
-#     name: "AEGIS · análisis GenAI server-side (OWASP Top 10)"
-#     entry: uv run --frozen aegis-hook
-#     language: system
-#     stages: [pre-commit]
-#     require_serial: true
-#     pass_filenames: true
+  # --- El propio gate AEGIS ------------------------------------------------
+  # Dogfooding: este repositorio también pasa por su propio control. Se declara en
+  # el stage `manual` a propósito: si estuviera en `pre-commit`, un commit quedaría
+  # bloqueado cuando el servidor de análisis no estuviera levantado, y eso enseña a
+  # la gente a usar `--no-verify`, que es justo lo que el diseño quiere evitar en el
+  # repo del producto. En los repositorios de producto sí va en `pre-commit`
+  # (ver .pre-commit-hooks.yaml).
+  #
+  #   pre-commit run --hook-stage manual aegis-analyze
+  - repo: local
+    hooks:
+      - id: aegis-analyze
+        name: "AEGIS · análisis GenAI (manual: requiere `aegis serve` + `aegis login`)"
+        entry: uv run --frozen aegis-hook
+        language: system
+        stages: [manual]
+        pass_filenames: false
+        require_serial: true
+      - id: aegis-attest
+        name: "AEGIS · adjuntar attestation (manual)"
+        entry: uv run --frozen aegis-attest
+        language: system
+        stages: [manual]
+        pass_filenames: false
+        require_serial: true
+        always_run: true

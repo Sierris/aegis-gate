@@ -59,7 +59,6 @@ def build_request_for_file(
         repo_id=repo_id,
         parent_sha=None,
         author_email=author_email,
-        message_sha256=canon.message_digest(f"aegis analyze {path.name}"),
         entries=[("A", "100644", canon.sha256_text(content), str(path), None)],
     )
     return AnalyzeRequest(
@@ -70,7 +69,7 @@ def build_request_for_file(
             parent_sha=None,
             author=Identity(name="Local", email=author_email),
             committer=Identity(name="Local", email=author_email),
-            message_sha256=canon.message_digest(f"aegis analyze {path.name}"),
+            subject=f"aegis analyze {path.name}",
             branch="main",
         ),
         files=(
