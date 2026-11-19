@@ -110,12 +110,9 @@ def sign_attestation(
         audit_ref=audit_ref,
         approver=approver,
         scope=scope,
+        categories=tuple(categories),
     )
-    # `categories` is informational for the verifier; it is carried as a private
-    # claim so adding it does not change the frozen AttestationClaims shape.
     payload = claims.model_dump(mode="json")
-    if categories:
-        payload["cat"] = sorted(c.value for c in categories)
     return jwt.encode(
         payload,
         key.private_key,

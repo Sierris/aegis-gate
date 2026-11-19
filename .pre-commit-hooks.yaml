@@ -42,3 +42,17 @@
   stages: [post-commit]
   always_run: true
   verbose: false
+
+- id: aegis-verify
+  name: "AEGIS · verificar attestations del push"
+  description: >
+    Etapa pre-push: recalcula el digest de cada commit que se va a enviar y comprueba
+    la attestation firmada. Mismo verificador que CI, para que un verde local sea un
+    verde remoto. Feedback rápido, no el control: el control es el job de CI.
+  entry: aegis-pre-push
+  language: python
+  pass_filenames: false
+  require_serial: true
+  stages: [pre-push]
+  always_run: true
+  verbose: false

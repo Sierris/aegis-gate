@@ -511,6 +511,13 @@ class AttestationClaims(StrictModel):
     #: Set when a plain ``allow`` attestation was re-issued as ``allow_override``
     #: after a second-identity approval.
     approver: str | None = Field(default=None, max_length=320)
+    #: OWASP categories the policy enabled for this analysis: a verifier needs to
+    #: know what was *looked for*, not only what was found. Declared as a proper
+    #: field — an earlier version injected a loose ``cat`` key from the signer, and
+    #: ``extra="forbid"`` then rejected our own output. The verifier tests caught it.
+    #: No alias: the wire name is not worth the ambiguity, and 19 bytes per category
+    #: in a 2 KB token is not a reason to be clever.
+    categories: tuple[OwaspCategory, ...] = ()
     #: Space-separated capabilities, mirrors the OAuth scope that authorised the
     #: analysis. A token minted for ``analyze`` must not be usable to ``override``.
     scope: str = Field(default="analyze", max_length=128)

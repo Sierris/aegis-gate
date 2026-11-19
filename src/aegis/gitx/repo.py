@@ -133,15 +133,25 @@ class GitRepo:
         produces the same id, and a repo with no remote can never be confused with
         a hosted one.
         """
+        candidates: list[str] = []
         for remote in ("origin", "upstream"):
             out = self._run("remote", "get-url", remote, check=False).decode().strip()
             if out:
-                return canon.normalize_repo_id(out)
+                candidates.append(out)
         any_remote = self._run("remote", check=False).decode().split()
         if any_remote:
             out = self._run("remote", "get-url", any_remote[0], check=False).decode().strip()
             if out:
-                return canon.normalize_repo_id(out)
+                candidates.append(out)
+        for candidate in candidates:
+            try:
+                return canon.normalize_repo_id(candidate)
+            except ValueError:
+                # An unparseable remote must not crash a hook with a traceback; try
+                # the next one and, if none works, fall back to the local path — the
+                # repository identity is needed for the digest, so failing here is
+                # never silently ignorable.
+                continue
         return canon.normalize_repo_id(f"file://{self._cwd}")
 
     def head_sha(self) -> str | None:

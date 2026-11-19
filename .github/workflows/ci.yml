@@ -97,6 +97,57 @@ jobs:
       - name: Run tests
         run: uv run --no-sync --frozen pytest -q --cov --cov-report=term-missing
 
+  integrity:
+    name: attestation integrity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The verifier needs the commit range and the notes ref, so the full
+          # graph must be present.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv sync --locked --all-extras --group dev
+
+      # The verifier itself, exercised against real repositories and real
+      # signatures (forgery, wrong audience, expiry, rewritten commit, tampered note).
+      - name: Verifier test suite
+        run: uv run --no-sync pytest tests/test_verify.py tests/test_gitx.py -q
+
+      # Enforcement needs a trust anchor. Two supported ways: a repository secret
+      # with the JWKS URL/document, or a pinned `.aegis/jwks.json`. Without either,
+      # this job reports that enforcement is not configured for this repository —
+      # it does not pretend to have verified anything.
+      - name: Pin the trust anchor
+        if: env.AEGIS_JWKS != ''
+        env:
+          AEGIS_JWKS: ${{ vars.AEGIS_JWKS_URL }}
+        run: uv run --no-sync aegis keys export --out .aegis/jwks.json
+
+      - name: Verify the pushed range
+        env:
+          AEGIS_JWKS: ${{ vars.AEGIS_JWKS_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AEGIS_JWKS:-}" ] && [ ! -f .aegis/jwks.json ]; then
+            echo "::notice::Sin ancla de confianza configurada (AEGIS_JWKS_URL)."
+            echo "El mecanismo está cubierto por los tests; el enforcement se activa por repositorio."
+            exit 0
+          fi
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="HEAD~1..HEAD"
+          else
+            RANGE="$BEFORE..${{ github.sha }}"
+          fi
+          echo "Verificando $RANGE"
+          uv run --no-sync aegis verify --range "$RANGE"
+
   digest-stability:
     name: digest format is frozen
     runs-on: ubuntu-24.04

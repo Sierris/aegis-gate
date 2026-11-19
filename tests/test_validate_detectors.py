@@ -306,3 +306,44 @@ def test_json_round_trip_of_a_finding() -> None:
     json.dumps(dumped)  # must be serialisable for the cache
     assert dumped["source"] == "llm"
     assert dumped["blocking"] is True
+
+
+# --------------------------------------------------------------------------- #
+# XSS (named explicitly in the challenge, under A03:2021)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "line",
+    [
+        'return Markup(request.args["html"])',
+        "element.innerHTML = req.query.q",
+        "dangerouslySetInnerHTML={{__html: userInput}}",
+        "{{ comment.body | safe }}",
+    ],
+)
+def test_xss_sinks_fire(line: str) -> None:
+    anchors = scan(line, path="views.py")
+    assert anchors, f"no anchor for {line!r}"
+    assert all(a.category is OwaspCategory.A03_INJECTION for a in anchors)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'return render_template("x.html", name=name)',
+        "{{ config.SITE_NAME | safe }}",
+        "{{ settings.FOOTER_HTML | safe }}",
+        "const escaped = DOMPurify.sanitize(userInput)",
+    ],
+)
+def test_xss_false_positives_stay_quiet(line: str) -> None:
+    """A gate that flags configuration constants gets disabled within a week."""
+    assert scan(line, path="views.py") == []
+
+
+def test_vulnerable_xss_example_is_anchored() -> None:
+    """The example shipped with the repository must be caught by the floor too."""
+    from pathlib import Path
+
+    code = (Path(__file__).resolve().parents[1] / "examples" / "vulnerable" / "xss.py").read_text()
+    anchors = scan(code, path="xss.py")
+    assert any(a.rule_id.startswith("A03-XSS") for a in anchors)

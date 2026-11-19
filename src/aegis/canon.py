@@ -60,6 +60,7 @@ import hmac
 import json
 import unicodedata
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import Final, Literal, TypeAlias
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +150,15 @@ def normalize_repo_id(repo_id: str) -> str:
     raw = repo_id.strip()
     if not raw:
         raise ValueError("repo_id must not be empty")
+
+    # A plain filesystem path as the remote (``git remote add origin /srv/repo.git``)
+    # is common in local testing and in self-hosted setups. It has no host, so the
+    # scheme becomes the namespace — the same rule as ``file://``.
+    if raw.startswith(("/", "./", "../", "~")):
+        local = str(Path(raw).expanduser()).strip("/").lower()
+        if not local:
+            raise ValueError(f"cannot derive a repository id from {repo_id!r}")
+        return f"file/{local}"
 
     # Two structurally different remote syntaxes must be handled separately,
     # because ':' means "port" in one and "path separator" in the other:

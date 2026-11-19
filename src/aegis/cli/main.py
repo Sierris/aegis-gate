@@ -49,7 +49,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("whoami", help="mostrar identidad y scopes del token")
     sub.add_parser("token", help="imprimir un access token válido")
     sub.add_parser("doctor", help="diagnóstico del entorno cliente")
-    sub.add_parser("keys", help="mostrar el JWKS del servidor")
 
     analyze = sub.add_parser("analyze", help="analizar un fichero (server-side o --local)")
     analyze.add_argument("path", type=Path, help="fichero a analizar")
@@ -58,6 +57,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     models = sub.add_parser("models", help="listar modelos disponibles de Command Code")
     models.add_argument("pattern", nargs="?", default=None, help="filtro por substring")
+
+    verify = sub.add_parser("verify", help="verificar attestations de un rango de commits")
+    verify.add_argument("--range", dest="range_spec", default=None, help="A..B (default: upstream..HEAD)")
+    verify.add_argument("--jwks", default=None, help="fichero o URL del JWKS de confianza")
+    verify.add_argument("--issuer", default=None, help="issuer esperado (default: el del .env)")
+    verify.add_argument(
+        "--report-only",
+        action="store_true",
+        help="no fallar si falta la attestation (modo inventario)",
+    )
+    verify.add_argument("--json", action="store_true", help="salida JSON")
+    verify.add_argument("--include-merges", action="store_true", help="no omitir merge commits")
+
+    keys = sub.add_parser("keys", help="claves de firma del servidor")
+    keys_sub = keys.add_subparsers(dest="keys_command", required=True)
+    keys_show = keys_sub.add_parser("show", help="mostrar el JWKS del servidor")
+    keys_show.add_argument("--jwks", default=None, help="origen alternativo (fichero o URL)")
+    keys_export = keys_sub.add_parser("export", help="fijar el JWKS en un fichero (ancla de confianza)")
+    keys_export.add_argument("--out", type=Path, default=Path(".aegis/jwks.json"))
+    keys_export.add_argument("--jwks", default=None)
 
     user = sub.add_parser("user", help="gestión de usuarios del proveedor local")
     user_sub = user.add_subparsers(dest="user_command", required=True)
@@ -206,7 +225,24 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 - a re
             case "doctor":
                 return cmd_doctor()
             case "keys":
-                return cmd_keys()
+                from aegis.cli import verify as verify_cli  # noqa: PLC0415 - keeps startup fast
+
+                return (
+                    verify_cli.cmd_keys_export(out=args.out, jwks=args.jwks)
+                    if args.keys_command == "export"
+                    else verify_cli.cmd_keys_show(args.jwks)
+                )
+            case "verify":
+                from aegis.cli import verify as verify_cli  # noqa: PLC0415
+
+                return verify_cli.cmd_verify(
+                    range_spec=args.range_spec,
+                    jwks=args.jwks,
+                    issuer=args.issuer,
+                    require_attestation=not args.report_only,
+                    as_json=args.json,
+                    include_merges=args.include_merges,
+                )
             case "analyze":
                 from aegis.cli.analyze import analyze_local, analyze_remote  # noqa: PLC0415
 

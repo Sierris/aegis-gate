@@ -209,9 +209,44 @@ _RULES: tuple[Rule, ...] = (
         category=OwaspCategory.A03_INJECTION,
         severity=Severity.HIGH,
         cwe=1336,
-        title="Template rendered from a dynamic string",
+        title="Template rendered from a dynamic string (SSTI)",
         pattern=re.compile(r"(?i)render_template_string|Template\s*\(\s*[a-z_]\w*\s*\)|\|\s*safe\b"),
         confidence=0.55,
+    ),
+    Rule(
+        id="A03-XSS-001",
+        kind=AnchorKind.CODE_EVAL,  # same trust boundary: data interpreted as code
+        category=OwaspCategory.A03_INJECTION,
+        severity=Severity.HIGH,
+        cwe=79,
+        title="HTML written through a sink that disables escaping",
+        # These sinks are dangerous by construction: they exist to bypass escaping,
+        # so no input hint is needed to justify looking at them. `|safe` is handled
+        # separately below because it is only dangerous when applied to content.
+        pattern=re.compile(
+            r"dangerouslySetInnerHTML|\binnerHTML\s*=|document\.write\s*\(|"
+            r"\bMarkup\s*\(|response\.(write|send)\s*\([^)]*\+"
+        ),
+        requires_input_hint=False,
+        confidence=0.55,
+    ),
+    Rule(
+        id="A03-XSS-002",
+        kind=AnchorKind.CODE_EVAL,
+        category=OwaspCategory.A03_INJECTION,
+        severity=Severity.HIGH,
+        cwe=79,
+        title="Template value marked as safe (escaping disabled)",
+        # `{{ config.SITE_NAME | safe }}` is harmless; `{{ comment.body | safe }}`
+        # is stored XSS. The second pattern keeps the rule from firing on the first,
+        # which is the difference between a usable gate and a noisy one.
+        pattern=re.compile(r"\|\s*safe\b"),
+        all_of=(re.compile(r"(?i)html|content|body|name|text|comment|message|title|description|bio|about"),),
+        # Configuration constants are not user input, and flagging them is how a
+        # gate earns the reputation that eventually gets it disabled.
+        suppress_if=(re.compile(r"(?i)\b(config|settings|env|constants?|consts?|i18n|theme)\."),),
+        requires_input_hint=False,
+        confidence=0.45,
     ),
     Rule(
         id="A03-DESER-001",

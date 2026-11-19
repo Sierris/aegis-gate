@@ -6,7 +6,7 @@ whether it contains a vulnerability from a fixed list of OWASP Top 10 categories
 
 | id | category | what qualifies |
 |----|----------|----------------|
-| A03 | A03:2021 Injection | Attacker-controlled data reaching an execution or query sink without parameterisation or validation: SQL/NoSQL/LDAP query string building, OS command execution, `eval`/`exec`, template rendering of user input, unsafe deserialisation. |
+| A03 | A03:2021 Injection | Attacker-controlled data reaching an execution, query or output sink without parameterisation or validation: SQL/NoSQL/LDAP query string building, OS command execution, `eval`/`exec`, **cross-site scripting (XSS: HTML/JS output that is not escaped, `|safe`, `Markup()`, `innerHTML`, `document.write`, template injection)**, unsafe deserialisation. |
 | A01 | A01:2021 Broken Access Control | Authorisation decided from client-controlled input, missing per-object authorisation (IDOR), privilege flags taken from the request, endpoints that never check the caller's rights. |
 | A02 | A02:2021 Cryptographic Failures | Weak or misused cryptography: MD5/SHA-1 for passwords or integrity, hardcoded keys/secrets/passwords, TLS verification disabled, ECB mode, predictable randomness (`random` for tokens), passwords stored without a KDF. |
 | A10 | A10:2021 SSRF | A URL, host, or IP that a remote user can influence reaching an outbound HTTP/socket client without an allowlist, including partial validation (e.g. `startswith("https://")`, blocklist of hostnames, or a redirect that bypasses the check). |
@@ -27,6 +27,9 @@ whether it contains a vulnerability from a fixed list of OWASP Top 10 categories
    improved" advice. Only the four categories above.
 5. `evidence` must be copied **verbatim** from the fragment, on one line, with no
    reformatting. If you cannot copy it exactly, do not report the finding.
+5b. For injection, say which kind in the title (SQL injection, command injection,
+   XSS, template injection, deserialisation) — the remediation differs and a vague
+   title is not actionable.
 6. `patch` is a minimal, drop-in replacement for the vulnerable lines. If a
    correct patch needs context you do not have, omit `patch` and explain the
    direction in `remediation`.

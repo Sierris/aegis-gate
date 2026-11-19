@@ -5,8 +5,11 @@ Gate de commits con análisis **server-side** de OWASP Top 10 usando un LLM, con
 permiten demostrar, en CI, que los commits que llegaron al remoto son exactamente
 los que el analizador inspeccionó.
 
-> **Estado:** pasos 1–3 de N — fundamentos, autenticación y motor de análisis
-> GenAI funcionando end-to-end contra Command Code. Ver [Roadmap](#roadmap).
+> **Estado:** completo — los 5 pasos del roadmap implementados y verificados.
+> 376 tests · `ruff` y `mypy --strict` limpios · CI verde en 3 versiones de Python.
+>
+> 📋 [Trazabilidad de requisitos](docs/requirements.md) (punto por punto contra el PDF)
+> · 📘 [Informe de implementación](docs/implementation-report.md) (nivel de desarrollador)
 
 ---
 
@@ -342,6 +345,50 @@ contra repositorios git reales.
 | Analizar A y commitear B con `--no-verify` | `post-commit` compara digests, no coincide y **no ancla** nada |
 | `git commit` con el servidor caído | `fail_mode=closed` bloquea con explicación; `open` permite dejando constancia |
 
+## Verificación: cómo se detecta una evasión
+
+El hook local es *feedback rápido*; el control es la verificación del digest contra el
+commit real. Tres capas, con el mismo verificador:
+
+| Capa | Cuándo | Qué detecta |
+|---|---|---|
+| `aegis-attest` (post-commit) | tras cada commit | que el commit creado es el que se analizó (recalcula el digest) |
+| `aegis-pre-push` | antes de cada push | commits sin attestation o con digest distinto |
+| job `integrity` (CI) | en cada push/PR | lo mismo, pero en infraestructura que el autor no controla |
+
+```bash
+# 1. commit con --no-verify (salta el hook)
+$ git commit --no-verify -m "feat: algo"
+$ aegis verify --range HEAD~1..HEAD
+  ⛔ 6683bec350fb  missing_attestation
+       no attestation for this commit: it was pushed without the pre-commit gate
+  ✗ Verificación FALLIDA
+  exit=5
+
+# 2. push: bloqueará también en local
+$ git push origin main
+  AEGIS · verificar attestations del push..................................Failed
+  AEGIS · ✗ 1 de 1 commit(s) sin attestation válida
+  error: failed to push some refs
+
+# 3. commit legítimo
+$ aegis verify --range HEAD~2..HEAD
+  ✅ 463b7ffda7e2  ok
+       verified as dev@mercadolibre.com · prompt analyze.v1@1ff3b58ff416 · 0 finding(s)
+  ✅ 1d81a4d738b7  ok
+       verified as dev@mercadolibre.com · prompt analyze.v1@1ff3b58ff416 · 1 finding(s)
+  resumen: {'ok': 2}
+```
+
+La verificación es **offline**: solo necesita el JWKS, no el servidor. El ancla de
+confianza se fija con `aegis keys export` y su cambio se revisa como un commit — es el
+único artefacto cuyo cambio *debe* ser visible en un diff.
+
+En GitHub Actions se activa con la variable `AEGIS_JWKS_URL`; sin ella el job lo dice
+explícitamente y no finge haber verificado nada.
+
+---
+
 ## Análisis de resultados
 
 Ejecución real del pipeline completo sobre [`examples/`](examples) con
@@ -433,9 +480,10 @@ cada push y en cada PR. **No requiere secretos**: los jobs `quality` (pre-commit
 - [x] **Paso 4 — Hook**: `aegis-hook` (pre-commit) + `aegis-attest` (post-commit),
       lectura del índice con plumbing, fragmentos por hunks, `fail_mode` auditado,
       attestation como git note **previa verificación** del digest real.
-- [ ] **Paso 5 — Integridad end-to-end**: `aegis verify` (offline con JWKS),
-      verificación en `pre-push` y en GitHub Actions, detección de commits sin
-      attestation enviados con `--no-verify`.
+- [x] **Paso 5 — Integridad end-to-end**: `aegis verify` (offline con JWKS anclado),
+      `aegis-pre-push`, job `integrity` en CI, detección de commits sin attestation
+      (`--no-verify`), amend tras `allow` y notas falsificadas. XSS añadido a la
+      cobertura (el PDF lo menciona explícitamente).
 - [ ] **Paso 6 — Ejemplos y demo**: `examples/vulnerable/*` vs `examples/clean/*`,
       resultados esperados, monitoreo de evasiones.
 - [ ] **Paso 7 — README final**: arquitectura, guía de uso, resumen técnico,
