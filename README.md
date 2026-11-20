@@ -10,6 +10,8 @@ los que el analizador inspeccionó.
 >
 > 📋 [Trazabilidad de requisitos](docs/requirements.md) (punto por punto contra el PDF)
 > · 📘 [Informe de implementación](docs/implementation-report.md) (nivel de desarrollador)
+> · 🧪 **[Guía paso a paso: ver AEGIS en acción con un RCE](docs/guide/DEMO-RCE.md)** —
+> [en PDF](docs/guide/DEMO-RCE.pdf)
 
 ---
 
@@ -53,10 +55,48 @@ git commit
 
 | Documento | Contenido |
 |---|---|
+| [`docs/requirements.md`](docs/requirements.md) | Trazabilidad requisito → implementación → evidencia ejecutable (33 requisitos) |
+| [`docs/implementation-report.md`](docs/implementation-report.md) | Informe de desarrollador: módulos, decisiones, 14 fallos corregidos, métricas |
+| [`docs/guide/DEMO-RCE.md`](docs/guide/DEMO-RCE.md) · [PDF](docs/guide/DEMO-RCE.pdf) | **Guía paso a paso**: RCE → rechazo → corrección → attestation |
 | [`docs/architecture.md`](docs/architecture.md) | Arquitectura, modelo de integridad, threat model, anti-evasión, escalabilidad, ADRs |
 | [`docs/references/`](docs/references) | Enunciado original del challenge |
 | `src/aegis/contracts.py` | Contrato congelado cliente ↔ servidor (fuente de verdad) |
 | `src/aegis/canon.py` | Primitivas de canonicalización y digest (la base de la integridad) |
+
+---
+
+## 🧪 Guía práctica: verlo funcionando en ~15 minutos
+
+Si quieres comprobar el sistema con tus propias manos, la guía recorre el caso
+completo: un fichero Python con **ejecución remota de comandos**, el rechazo del
+servidor con explicación y parche, la corrección, la attestation firmada, las dos
+evasiones (`--no-verify` y `amend`) y qué hace GitHub Actions.
+
+| Formato | Ruta |
+|---|---|
+| Markdown (versionado, se actualiza con PRs) | [`docs/guide/DEMO-RCE.md`](docs/guide/DEMO-RCE.md) |
+| PDF (para leer o compartir) | [`docs/guide/DEMO-RCE.pdf`](docs/guide/DEMO-RCE.pdf) |
+
+Contenido de la guía:
+
+1. El código con RCE (`subprocess.run(..., shell=True)` con entrada del usuario)
+2. Arrancar el servidor (`cp .env.example .env`, `aegis serve`)
+3. Crear usuario y autenticarse (`aegis user add`, `aegis login`)
+4. Repositorio de prueba con los tres hooks instalados
+5. `git commit` → bloqueo, con la salida real esperada
+6. Qué hizo el servidor por dentro (registro de auditoría, `anchors=2`)
+7. Corregir el código → `allow` + `git note` con la attestation
+8. `aegis verify` (verificación offline con el JWKS)
+9. Las evasiones: `--no-verify`, push bloqueado, `amend` después de un `allow`
+10. Qué hace GitHub Actions y qué hace falta para activarlo
+11. Variante de RCE por deserialización (`pickle.loads`)
+12. Tabla de problemas típicos y su causa
+
+Regenerar el PDF tras editar el Markdown:
+
+```bash
+make pdf          # requiere pandoc + weasyprint
+```
 
 ---
 

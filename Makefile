@@ -54,6 +54,22 @@ check: lint type test ## What CI runs (quality + tests)
 precommit: ## Run the full pre-commit suite over every file
 	$(UV) run pre-commit run --all-files --show-diff-on-failure
 
+.PHONY: pdf
+pdf: ## Regenerar la guía PDF desde el Markdown (docs/guide/)
+	@command -v pandoc >/dev/null 2>&1 || { echo "falta pandoc: brew install pandoc"; exit 1; }
+	@command -v weasyprint >/dev/null 2>&1 || { echo "falta weasyprint: brew install weasyprint"; exit 1; }
+	pandoc docs/guide/DEMO-RCE.md -o docs/guide/DEMO-RCE.pdf \
+		--pdf-engine=weasyprint \
+		--css=docs/guide/pdf.css \
+		--toc --toc-depth=2 \
+		--syntax-highlighting=tango \
+		--metadata title="Guía práctica: ver AEGIS en acción con un RCE" \
+		--metadata subtitle="Verificación de un commit vulnerable, paso a paso" \
+		--metadata author="AEGIS · AppSec GenAI Integrity Sentinel" \
+		--metadata date="AEGIS 0.1.0" \
+		-V lang=es
+	@ls -lh docs/guide/DEMO-RCE.pdf
+
 .PHONY: clean
 clean: ## Remove caches and build artefacts
 	rm -rf .cache .pytest_cache .ruff_cache .mypy_cache build dist htmlcov .coverage

@@ -119,6 +119,12 @@ jobs:
       - name: Verifier test suite
         run: uv run --no-sync pytest tests/test_verify.py tests/test_gitx.py -q
 
+      # The attestations live in refs/notes/aegis. A normal checkout does NOT fetch
+      # notes, so without this step every commit would be reported as
+      # ``missing_attestation`` — a false red that would train people to ignore the job.
+      - name: Fetch attestations (refs/notes/aegis)
+        run: git fetch origin refs/notes/aegis:refs/notes/aegis || echo "::notice::sin notas en el remoto"
+
       # Enforcement needs a trust anchor. Two supported ways: a repository secret
       # with the JWKS URL/document, or a pinned `.aegis/jwks.json`. Without either,
       # this job reports that enforcement is not configured for this repository —
